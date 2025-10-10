@@ -14,9 +14,44 @@
             }
         }
     </script>
+
+    <link rel="stylesheet" href="./src/styles/main.css" />
 	</head>
 
 	<body>
+
+        <div id="control-menu">
+
+            <div class="control-group">
+                <div class="control-label">MODE</div>
+                <button class="control-btn active" id="btn-orbit">Orbit</button>
+                <button class="control-btn" id="btn-pan">Pan</button>
+                <button class="control-btn" id="btn-select">Select</button>
+            </div>
+            
+            <div class="control-group">
+                <div class="control-label">ZOOM</div>
+                <button class="control-btn" id="btn-zoom-in">Zoom In</button>
+                <button class="control-btn" id="btn-zoom-out">Zoom Out</button>
+                <button class="control-btn" id="btn-reset">Reset View</button>
+            </div>
+
+            <div class="section-divider"></div>
+
+            <div id="query-section">
+                <div class="section-title">QUERY</div>
+                <div class="section-content">Query controls will appear here...</div>
+            </div>
+
+            <div class="section-divider"></div>
+
+            <div id="object-labels-section">
+                <div class="section-title">OBJECT LABELS</div>
+                <div class="section-content">Object labels will appear here...</div>
+            </div>
+
+        </div>
+
         <script type="module" src="./src/main.js"></script>
     </body>
 </html>

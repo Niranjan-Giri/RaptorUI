@@ -1,0 +1,114 @@
+body 
+{
+    margin: 0;
+    overflow: hidden;
+}
+            
+#control-menu 
+{
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    width: 300px;
+    background: rgba(32, 32, 32, 0.95);
+    padding: 20px;
+    color: white;
+    font-family: Arial, sans-serif;
+    z-index: 1000;
+    overflow-y: auto;
+    box-shadow: -2px 0 10px rgba(0, 0, 0, 0.3);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+#control-menu::-webkit-scrollbar 
+{
+    width: 8px;
+}
+
+#control-menu::-webkit-scrollbar-track 
+{
+    background: rgba(0, 0, 0, 0.2);
+}
+
+#control-menu::-webkit-scrollbar-thumb 
+{
+    background: #505050;
+    border-radius: 4px;
+}
+
+#control-menu::-webkit-scrollbar-thumb:hover 
+{
+    background: #606060;
+}
+            
+.control-btn 
+{
+    display: block;
+    width: 100%;
+    padding: 10px;
+    margin: 5px 0;
+    background: #404040;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.2s;
+}
+
+.control-btn:hover 
+{
+    background: #505050;
+}
+
+.control-btn.active 
+{
+    background: #4CAF50;
+}
+
+.control-group 
+{
+    margin-bottom: 15px;
+}
+
+.control-label 
+{
+    font-size: 12px;
+    font-weight: bold;
+    margin-bottom: 8px;
+    opacity: 0.8;
+    letter-spacing: 0.5px;
+}
+
+.section-divider 
+{
+    height: 1px;
+    background: rgba(255, 255, 255, 0.1);
+    margin: 10px 0;
+}
+
+#query-section,
+#object-labels-section 
+{
+    padding: 15px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    min-height: 100px;
+}
+
+.section-title 
+{
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 10px;
+    color: #4CAF50;
+}
+
+.section-content 
+{
+    font-size: 12px;
+    opacity: 0.7;
+}

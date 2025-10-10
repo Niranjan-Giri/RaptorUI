@@ -3,9 +3,13 @@ import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 let scene, camera, renderer, controls;
+let currentMode = 'orbit';
+let raycaster, mouse;
+let selectedPoint = null;
 
 init();
 loadPLY();
+setupMenuControls();
 
 function init() 
 {
@@ -21,7 +25,92 @@ function init()
 
     controls = new OrbitControls(camera, renderer.domElement);
 
+    raycaster = new THREE.Raycaster();
+    raycaster.params.Points.threshold = 0.01;
+    mouse = new THREE.Vector2();
+
     window.addEventListener('resize', onWindowResize);
+    renderer.domElement.addEventListener('click', onCanvasClick);
+}
+
+function setupMenuControls() 
+{
+    // Mode buttons
+    document.getElementById('btn-orbit').addEventListener('click', () => setMode('orbit'));
+    document.getElementById('btn-pan').addEventListener('click', () => setMode('pan'));
+    document.getElementById('btn-select').addEventListener('click', () => setMode('select'));
+    
+    // Zoom buttons
+    document.getElementById('btn-zoom-in').addEventListener('click', zoomIn);
+    document.getElementById('btn-zoom-out').addEventListener('click', zoomOut);
+    document.getElementById('btn-reset').addEventListener('click', resetView);
+}
+
+function setMode(mode) 
+{
+    currentMode = mode;
+    
+    // Update button states
+    document.querySelectorAll('.control-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    if (mode === 'orbit') 
+    {
+        document.getElementById('btn-orbit').classList.add('active');
+        controls.enableRotate = true;
+        controls.enablePan = false;
+        renderer.domElement.style.cursor = 'grab';  
+    } 
+    else if (mode === 'pan') 
+    {
+        document.getElementById('btn-pan').classList.add('active');
+        controls.enableRotate = false;
+        controls.enablePan = true;
+        renderer.domElement.style.cursor = 'move';
+    } 
+    else if (mode === 'select') 
+    {
+        document.getElementById('btn-select').classList.add('active');
+        controls.enableRotate = false;
+        controls.enablePan = false;
+        renderer.domElement.style.cursor = 'crosshair';
+    }
+}
+
+function zoomIn() 
+{
+    camera.position.multiplyScalar(0.8);
+    controls.update();
+}
+
+function zoomOut() 
+{
+    camera.position.multiplyScalar(1.2);
+    controls.update();
+}
+
+function resetView() 
+{
+    camera.position.set(0, 0, 2);
+    controls.target.set(0, 0, 0);
+    controls.update();
+}
+
+function onCanvasClick(event) 
+{
+    if (currentMode !== 'select') return;
+    
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    
+    raycaster.setFromCamera(mouse, camera);
+    
+    const intersects = raycaster.intersectObjects(scene.children);
+    
+    if (intersects.length > 0) {
+        console.log('Selected point:', intersects[0].point);
+    }
 }
 
 function loadPLY() 
@@ -32,19 +121,19 @@ function loadPLY()
     loader.load('/public/B3_S4.ply', function (geometry) {
         geometry.computeVertexNormals();
 
-        /*For getting the center*/
+        //for getting the center
         geometry.computeBoundingBox();
         const bbox = geometry.boundingBox;
         const center = new THREE.Vector3();
         bbox.getCenter(center);
 
-        /*Now we will calculate distance taking reference to infinity*/
+        //Now we will calculate distance taking reference to infinity
         const positions = geometry.attributes.position;
         const colors = [];
         let minDist = Infinity;
         let maxDist = -Infinity;
 
-        /*We will assign actual min and max distance now*/
+        //We will assign actual min and max distance now
         for (let i = 0; i < positions.count; i++)
         {
             const x = positions.getX(i);
@@ -77,7 +166,7 @@ function loadPLY()
             } 
             else 
             {
-                const t = (normalizedDist - 0.5) * 2; // 0 to 1
+                const t = (normalizedDist - 0.5) * 2; 
                 r = t;
                 g = 1 - t;
                 b = 0;
