@@ -24,9 +24,18 @@ function init()
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.position.set(0, 0, 2);
 
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer = new THREE.WebGLRenderer
+    ({ 
+        antialias: true, 
+        alpha: true, 
+        powerPreference: "high-performance"
+    });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.shadowMap.enabled = true;                    
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;   
+    renderer.setPixelRatio(window.devicePixelRatio);     
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
@@ -180,7 +189,10 @@ function updateRender()
         const material = new THREE.MeshStandardMaterial({
             vertexColors: true,
             flatShading: false,
-            side: THREE.DoubleSide
+            side: THREE.DoubleSide,
+            roughness: 0.7,
+            metalness: 0.0,
+            envMapIntensity: 1.0
         });
         currentObject = new THREE.Mesh(currentGeometry, material);
         currentObject.castShadow = true;
@@ -193,8 +205,15 @@ function updateRender()
             scene.add(ambientLight);
             
             directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-            directionalLight.position.set(1, 1, 1);
+            directionalLight.position.set(5, 5, 5);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
             scene.add(directionalLight);
+
+            const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
+            fillLight.position.set(-5, 0, -5);
+            scene.add(fillLight);
         }
     }
     
