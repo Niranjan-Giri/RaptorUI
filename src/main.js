@@ -5,7 +5,12 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 let scene, camera, renderer, controls;
 let currentMode = 'orbit';
 let raycaster, mouse;
-let selectedPoint = null;
+
+let currentGeometry = null;
+let currentObject = null;
+let renderMode = 'points';
+let ambientLight = null;
+let directionalLight = null;
 
 init();
 loadPLY();
@@ -20,6 +25,8 @@ function init()
     camera.position.set(0, 0, 2);
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
@@ -44,6 +51,10 @@ function setupMenuControls()
     document.getElementById('btn-zoom-in').addEventListener('click', zoomIn);
     document.getElementById('btn-zoom-out').addEventListener('click', zoomOut);
     document.getElementById('btn-reset').addEventListener('click', resetView);
+
+    // Render mode buttons
+    document.getElementById('btn-point-cloud').addEventListener('click', () => setRenderMode('points'));
+    document.getElementById('btn-3d-mesh').addEventListener('click', () => setRenderMode('mesh'));
 }
 
 function setMode(mode) 
@@ -75,6 +86,29 @@ function setMode(mode)
         controls.enableRotate = false;
         controls.enablePan = false;
         renderer.domElement.style.cursor = 'crosshair';
+    }
+}
+
+function setRenderMode(mode) 
+{
+    renderMode = mode;
+    
+    // Update button states
+    if (mode === 'points') 
+    {
+        document.getElementById('btn-point-cloud').classList.add('active');
+        document.getElementById('btn-3d-mesh').classList.remove('active');
+    } 
+    else 
+    {
+        document.getElementById('btn-point-cloud').classList.remove('active');
+        document.getElementById('btn-3d-mesh').classList.add('active');
+    }
+    
+    // Re-render with new mode
+    if (currentGeometry) 
+    {
+        updateRender();
     }
 }
 
@@ -113,12 +147,66 @@ function onCanvasClick(event)
     }
 }
 
+function updateRender() 
+{
+    // Remove current object
+    if (currentObject) 
+    {
+        scene.remove(currentObject);
+    }
+    
+    // Remove lights if switching from mesh to points
+    if (renderMode === 'points' && ambientLight) 
+    {
+        scene.remove(ambientLight);
+        scene.remove(directionalLight);
+        ambientLight = null;
+        directionalLight = null;
+    }
+    
+    if (renderMode === 'points') 
+    {
+        const material = new THREE.PointsMaterial({
+            size: 0.005,
+            vertexColors: true,
+            color: 0xffffff
+        });
+        currentObject = new THREE.Points(currentGeometry, material);  
+        currentObject.castShadow = true;
+        currentObject.receiveShadow = true;    
+    } 
+    else 
+    {
+        const material = new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            flatShading: false,
+            side: THREE.DoubleSide
+        });
+        currentObject = new THREE.Mesh(currentGeometry, material);
+        currentObject.castShadow = true;
+        currentObject.receiveShadow = true;
+        
+        // Add lights for mesh rendering
+        if (!ambientLight) 
+        {
+            ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+        }
+    }
+    
+    scene.add(currentObject);
+}
+
 function loadPLY() 
 {
     const loader = new PLYLoader();
 
-
     loader.load('/public/B3_S4.ply', function (geometry) {
+        geometry.center();
         geometry.computeVertexNormals();
 
         //for getting the center
@@ -175,20 +263,19 @@ function loadPLY()
             colors.push(r, g, b);
         }
 
-        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        if (!geometry.hasAttribute('color')) 
+        {
+            geometry.setAttribute(
+                'color',
+                new THREE.Float32BufferAttribute(
+                    new Array(geometry.attributes.position.count * 3).fill(1),
+                    3
+                )
+            );
+        }
 
-
-        const material = new THREE.PointsMaterial
-        ({
-            size: 0.005,
-            //If set to true, it will use colors based on distance
-            //Otherwise it will use the default white color
-            vertexColors: true,
-            color: 0xffffff
-        });
-
-        const points = new THREE.Points(geometry, material);
-        scene.add(points);
+        currentGeometry = geometry;
+        updateRender();
 
         animate();
     });
