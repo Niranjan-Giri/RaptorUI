@@ -9,7 +9,7 @@ let currentMode = 'orbit';
 let raycaster, mouse;
 
 // Changed to support multiple files
-let loadedFiles = new Map(); // Store { filename: { geometry, object, visible, color } }
+let loadedFiles = new Map(); // Store in the format filename: { geometry, object, visible, color
 let renderMode = 'points';
 let ambientLight = null;
 let directionalLight = null;
@@ -21,7 +21,9 @@ let infoIcon = null;
 const plyFiles = [
     '/B3_S4.ply',
     '/B3_S2.ply',
-    //'/B3_S5.ply',
+    '/B3_S5.ply',
+    //'/Bldg3_Stage1_full_building_registered.ply',
+    //'/Bldg3_Stage2_full_building_registered.ply',
 ];
 
 init();
@@ -321,8 +323,8 @@ function setMode(mode)
 {
     currentMode = mode;
     
-    // Update button states
-    document.querySelectorAll('.control-btn').forEach(btn => {
+    // Update button states - remove active from both control-btn and icon-btn
+    document.querySelectorAll('.control-btn, .icon-btn').forEach(btn => {
         btn.classList.remove('active');
     });
     

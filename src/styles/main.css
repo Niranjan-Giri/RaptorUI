@@ -3,6 +3,69 @@ body
     margin: 0;
     overflow: hidden;
 }
+
+/* Icon Toolbar */
+#icon-toolbar 
+{
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(32, 32, 32, 0.95);
+    padding: 10px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    z-index: 1000;
+}
+
+.icon-btn 
+{
+    width: 40px;
+    height: 40px;
+    padding: 8px;
+    background: rgba(64, 64, 64, 0.8);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+}
+
+.icon-btn svg 
+{
+    width: 24px;
+    height: 24px;
+}
+
+.icon-btn:hover 
+{
+    background: rgba(80, 80, 80, 0.9);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.icon-btn.active 
+{
+    background: #4CAF50;
+}
+
+.icon-btn.active:hover 
+{
+    background: #45a049;
+}
+
+.toolbar-divider 
+{
+    width: 1px;
+    height: 30px;
+    background: rgba(255, 255, 255, 0.2);
+    margin: 0 4px;
+}
             
 #control-menu 
 {

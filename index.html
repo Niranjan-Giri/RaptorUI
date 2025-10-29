@@ -19,25 +19,52 @@
     <link rel="stylesheet" href="./src/styles/main.css" />
 	</head>
 
-	<body>
+    <body>
+
+        <!-- Icon Toolbar -->
+        <div id="icon-toolbar">
+            <button class="icon-btn active" id="btn-orbit" title="Orbit">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                    <path d="M2 12h20"/>
+                </svg>
+            </button>
+            <button class="icon-btn" id="btn-pan" title="Pan">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3"/>
+                    <path d="M2 12h20M12 2v20"/>
+                </svg>
+            </button>
+            <button class="icon-btn" id="btn-select" title="Select">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>
+                </svg>
+            </button>
+            <div class="toolbar-divider"></div>
+            <button class="icon-btn" id="btn-zoom-in" title="Zoom In">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/>
+                </svg>
+            </button>
+            <button class="icon-btn" id="btn-zoom-out" title="Zoom Out">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="M21 21l-4.35-4.35M8 11h6"/>
+                </svg>
+            </button>
+            <button class="icon-btn" id="btn-reset" title="Reset View">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                    <path d="M21 3v5h-5"/>
+                    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                    <path d="M3 21v-5h5"/>
+                </svg>
+            </button>
+        </div>
 
         <div id="control-menu">
-
-            <div class="control-group">
-                <div class="control-label">MODE</div>
-                <button class="control-btn active" id="btn-orbit">Orbit</button>
-                <button class="control-btn" id="btn-pan">Pan</button>
-                <button class="control-btn" id="btn-select">Select</button>
-            </div>
-            
-            <div class="control-group">
-                <div class="control-label">ZOOM</div>
-                <button class="control-btn" id="btn-zoom-in">Zoom In</button>
-                <button class="control-btn" id="btn-zoom-out">Zoom Out</button>
-                <button class="control-btn" id="btn-reset">Reset View</button>
-            </div>
-
-            <div class="section-divider"></div>
 
             <div class="control-group">
                 <div class="control-label">RENDER MODE</div>
@@ -59,8 +86,6 @@
                 <div class="section-content">Object labels will appear here...</div>
             </div>
 
-        </div>
-
-        <script type="module" src="./src/main.js"></script>
+        </div>        <script type="module" src="./src/main.js"></script>
     </body>
 </html>
