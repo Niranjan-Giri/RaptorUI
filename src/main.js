@@ -1,19 +1,29 @@
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-let scene, camera, renderer, controls;
+
+let scene, camera, renderer, controls, transformControl;
 let currentMode = 'orbit';
 let raycaster, mouse;
 
-let currentGeometry = null;
-let currentObject = null;
+// Changed to support multiple files
+let loadedFiles = new Map(); // Store { filename: { geometry, object, visible, color } }
 let renderMode = 'points';
 let ambientLight = null;
 let directionalLight = null;
+let selectedFile = null;
+
+// List of PLY files to load
+const plyFiles = [
+    '/B3_S4.ply',
+    '/B3_S2.ply',
+    //'/B3_S5.ply',
+];
 
 init();
-loadPLY();
+loadAllPLYFiles();
 setupMenuControls();
 
 function init() 
@@ -40,6 +50,15 @@ function init()
     document.body.appendChild(renderer.domElement);
 
     controls = new OrbitControls(camera, renderer.domElement);
+    
+    // Initialize TransformControls
+    transformControl = new TransformControls(camera, renderer.domElement);
+    transformControl.setMode('translate'); // Default to translate mode
+    transformControl.addEventListener('dragging-changed', function (event) {
+        // Disable orbit controls while dragging
+        controls.enabled = !event.value;
+    });
+    scene.add(transformControl);
 
     raycaster = new THREE.Raycaster();
     raycaster.params.Points.threshold = 0.01;
@@ -47,6 +66,9 @@ function init()
 
     window.addEventListener('resize', onWindowResize);
     renderer.domElement.addEventListener('click', onCanvasClick);
+    
+    // Keyboard shortcuts for transform controls
+    window.addEventListener('keydown', onKeyDown);
 }
 
 function setupMenuControls() 
@@ -80,6 +102,9 @@ function setMode(mode)
         document.getElementById('btn-orbit').classList.add('active');
         controls.enableRotate = true;
         controls.enablePan = false;
+        controls.enabled = true;
+        // Deselect and disable transform when leaving select mode
+        deselectFile();
         renderer.domElement.style.cursor = 'grab';  
     } 
     else if (mode === 'pan') 
@@ -87,6 +112,9 @@ function setMode(mode)
         document.getElementById('btn-pan').classList.add('active');
         controls.enableRotate = false;
         controls.enablePan = true;
+        controls.enabled = true;
+        // Deselect and disable transform when leaving select mode
+        deselectFile();
         renderer.domElement.style.cursor = 'move';
     } 
     else if (mode === 'select') 
@@ -94,6 +122,9 @@ function setMode(mode)
         document.getElementById('btn-select').classList.add('active');
         controls.enableRotate = false;
         controls.enablePan = false;
+        
+        controls.enabled = true;
+       
         renderer.domElement.style.cursor = 'crosshair';
     }
 }
@@ -114,11 +145,10 @@ function setRenderMode(mode)
         document.getElementById('btn-3d-mesh').classList.add('active');
     }
     
-    // Re-render with new mode
-    if (currentGeometry) 
-    {
-        updateRender();
-    }
+    // Re-render all files with new mode
+    loadedFiles.forEach((fileData, filename) => {
+        updateFileRender(filename);
+    });
 }
 
 function zoomIn() 
@@ -149,29 +179,76 @@ function onCanvasClick(event)
     
     raycaster.setFromCamera(mouse, camera);
     
-    const intersects = raycaster.intersectObjects(scene.children);
+    // Only check loaded file objects, not transform controls
+    const objectsToCheck = [];
+    loadedFiles.forEach((fileData) => {
+        if (fileData.object && fileData.visible) {
+            objectsToCheck.push(fileData.object);
+        }
+    });
+    
+    const intersects = raycaster.intersectObjects(objectsToCheck, false);
     
     if (intersects.length > 0) {
-        console.log('Selected point:', intersects[0].point);
+        // Find which file was clicked
+        const clickedObject = intersects[0].object;
+        
+        // Deselect previous selection
+        if (selectedFile) {
+            const prevData = loadedFiles.get(selectedFile);
+            if (prevData && prevData.object) {
+                // Reset material color
+                if (renderMode === 'points') {
+                    prevData.object.material.vertexColors = true;
+                    prevData.object.material.color.set(0xffffff);
+                    prevData.object.material.needsUpdate = true;
+                }
+            }
+        }
+        
+        // Find the file that owns this object
+        for (const [filename, fileData] of loadedFiles.entries()) {
+            if (fileData.object === clickedObject) {
+                selectedFile = filename;
+                console.log('Selected file:', filename);
+                console.log('Selected point:', intersects[0].point);
+                
+                // Highlight selected object
+                if (renderMode === 'points') {
+                    clickedObject.material.vertexColors = false;
+                    clickedObject.material.color.set(0xffffff);
+                    clickedObject.material.needsUpdate = true;
+                }
+                
+                // Attach transform controls to selected object
+                transformControl.attach(clickedObject);
+                transformControl.enabled = true;
+                transformControl.visible = true;
+                
+                // Update UI to show selection
+                updateObjectLabelsUI();
+                break;
+            }
+        }
+    } else {
+        // Clicked on empty space - deselect
+        deselectFile();
     }
 }
 
-function updateRender() 
+function updateFileRender(filename) 
 {
-    // Remove current object
-    if (currentObject) 
+    const fileData = loadedFiles.get(filename);
+    if (!fileData) return;
+    
+    // Remove current object if exists
+    if (fileData.object) 
     {
-        scene.remove(currentObject);
+        scene.remove(fileData.object);
     }
     
-    // Remove lights if switching from mesh to points
-    if (renderMode === 'points' && ambientLight) 
-    {
-        scene.remove(ambientLight);
-        scene.remove(directionalLight);
-        ambientLight = null;
-        directionalLight = null;
-    }
+    // Don't render if not visible
+    if (!fileData.visible) return;
     
     if (renderMode === 'points') 
     {
@@ -180,9 +257,9 @@ function updateRender()
             vertexColors: true,
             color: 0xffffff
         });
-        currentObject = new THREE.Points(currentGeometry, material);  
-        currentObject.castShadow = true;
-        currentObject.receiveShadow = true;    
+        fileData.object = new THREE.Points(fileData.geometry, material);  
+        fileData.object.castShadow = true;
+        fileData.object.receiveShadow = true;    
     } 
     else 
     {
@@ -194,9 +271,9 @@ function updateRender()
             metalness: 0.0,
             envMapIntensity: 1.0
         });
-        currentObject = new THREE.Mesh(currentGeometry, material);
-        currentObject.castShadow = true;
-        currentObject.receiveShadow = true;
+        fileData.object = new THREE.Mesh(fileData.geometry, material);
+        fileData.object.castShadow = true;
+        fileData.object.receiveShadow = true;
         
         // Add lights for mesh rendering
         if (!ambientLight) 
@@ -217,87 +294,193 @@ function updateRender()
         }
     }
     
-    scene.add(currentObject);
+    scene.add(fileData.object);
 }
 
-function loadPLY() 
+function loadAllPLYFiles() 
 {
     const loader = new PLYLoader();
+    let loadedCount = 0;
 
-    loader.load('/public/B3_S4.ply', function (geometry) {
-        geometry.center();
-        geometry.computeVertexNormals();
+    plyFiles.forEach((filepath, index) => {
+        loader.load(filepath, function (geometry) {
+            geometry.center();
+            geometry.computeVertexNormals();
 
-        //for getting the center
-        geometry.computeBoundingBox();
-        const bbox = geometry.boundingBox;
-        const center = new THREE.Vector3();
-        bbox.getCenter(center);
+            // Get filename from path
+            const filename = filepath.split('/').pop();
 
-        //Now we will calculate distance taking reference to infinity
-        const positions = geometry.attributes.position;
-        const colors = [];
-        let minDist = Infinity;
-        let maxDist = -Infinity;
+            // Process geometry
+            processGeometryColors(geometry);
 
-        //We will assign actual min and max distance now
-        for (let i = 0; i < positions.count; i++)
-        {
-            const x = positions.getX(i);
-            const y = positions.getY(i);
-            const z = positions.getZ(i);
+            // Store file data
+            loadedFiles.set(filename, {
+                geometry: geometry,
+                object: null,
+                visible: true,
+                filepath: filepath
+            });
 
-            const dist = Math.sqrt(x*x + y*y + z*z);
-            minDist = Math.min(minDist, dist);
-            maxDist = Math.max(maxDist, dist);
-        }
+            // Render this file
+            updateFileRender(filename);
 
-        for (let i = 0; i < positions.count; i++) 
-        {
-            const x = positions.getX(i);
-            const y = positions.getY(i);
-            const z = positions.getZ(i);
-            const dist = Math.sqrt(x * x + y * y + z * z);
+            loadedCount++;
             
-            // Normalize distance to 0-1 range
-            const normalizedDist = (dist - minDist) / (maxDist - minDist);
-            
-            // Color mapping: close = yellow, medium = green, far = red
-            let r, g, b;
-            if (normalizedDist < 0.5) 
-            {   
-                const t = normalizedDist * 2;
-                r = 1 - t;
-                g = 1;
-                b = 0;
-            } 
-            else 
-            {
-                const t = (normalizedDist - 0.5) * 2; 
-                r = t;
-                g = 1 - t;
-                b = 0;
+            // Update UI when all files are loaded
+            if (loadedCount === plyFiles.length) {
+                createFileCheckboxes();
+                animate();
             }
-            
-            colors.push(r, g, b);
-        }
-
-        if (!geometry.hasAttribute('color')) 
-        {
-            geometry.setAttribute(
-                'color',
-                new THREE.Float32BufferAttribute(
-                    new Array(geometry.attributes.position.count * 3).fill(1),
-                    3
-                )
-            );
-        }
-
-        currentGeometry = geometry;
-        updateRender();
-
-        animate();
+        }, undefined, function(error) {
+            console.error(`Error loading ${filepath}:`, error);
+        });
     });
+}
+
+function processGeometryColors(geometry) {
+    geometry.computeBoundingBox();
+    const bbox = geometry.boundingBox;
+    const center = new THREE.Vector3();
+    bbox.getCenter(center);
+
+    const positions = geometry.attributes.position;
+    const colors = [];
+    let minDist = Infinity;
+    let maxDist = -Infinity;
+
+    for (let i = 0; i < positions.count; i++)
+    {
+        const x = positions.getX(i);
+        const y = positions.getY(i);
+        const z = positions.getZ(i);
+
+        const dist = Math.sqrt(x*x + y*y + z*z);
+        minDist = Math.min(minDist, dist);
+        maxDist = Math.max(maxDist, dist);
+    }
+
+    for (let i = 0; i < positions.count; i++) 
+    {
+        const x = positions.getX(i);
+        const y = positions.getY(i);
+        const z = positions.getZ(i);
+        const dist = Math.sqrt(x * x + y * y + z * z);
+        
+        const normalizedDist = (dist - minDist) / (maxDist - minDist);
+        
+        let r, g, b;
+        if (normalizedDist < 0.5) 
+        {   
+            const t = normalizedDist * 2;
+            r = 1 - t;
+            g = 1;
+            b = 0;
+        } 
+        else 
+        {
+            const t = (normalizedDist - 0.5) * 2; 
+            r = t;
+            g = 1 - t;
+            b = 0;
+        }
+        
+        colors.push(r, g, b);
+    }
+
+    geometry.setAttribute(
+        'color',
+        new THREE.Float32BufferAttribute(colors, 3)
+    );
+}
+
+function createFileCheckboxes() {
+    const container = document.getElementById('object-labels-section');
+    const contentDiv = container.querySelector('.section-content');
+    contentDiv.innerHTML = '';
+
+    loadedFiles.forEach((fileData, filename) => {
+        const label = document.createElement('label');
+        label.style.display = 'block';
+        label.style.marginBottom = '8px';
+        label.style.cursor = 'pointer';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = fileData.visible;
+        checkbox.style.marginRight = '8px';
+        checkbox.addEventListener('change', (e) => {
+            toggleFileVisibility(filename, e.target.checked);
+        });
+
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(filename));
+        contentDiv.appendChild(label);
+    });
+}
+
+function toggleFileVisibility(filename, visible) {
+    const fileData = loadedFiles.get(filename);
+    if (!fileData) return;
+
+    fileData.visible = visible;
+
+    if (visible) {
+        // Render the file
+        updateFileRender(filename);
+    } else {
+        // Remove from scene
+        if (fileData.object) {
+            scene.remove(fileData.object);
+        }
+        // Deselect if this was selected
+        if (selectedFile === filename) {
+            deselectFile();
+        }
+    }
+}
+
+function deselectFile() {
+    // Reset color of previously selected file
+    if (selectedFile) {
+        const prevData = loadedFiles.get(selectedFile);
+        if (prevData && prevData.object) {
+            if (renderMode === 'points') {
+                prevData.object.material.vertexColors = true;
+                prevData.object.material.color.set(0xffffff);
+                prevData.object.material.needsUpdate = true;
+            }
+        }
+    }
+    
+    selectedFile = null;
+    if (transformControl) {
+        transformControl.detach();
+        transformControl.enabled = false;
+        transformControl.visible = false;
+    }
+    updateObjectLabelsUI();
+}
+
+function updateObjectLabelsUI() {
+    const container = document.getElementById('object-labels-section');
+    const contentDiv = container.querySelector('.section-content');
+    
+    // Update checkboxes to highlight selected file
+    const labels = contentDiv.querySelectorAll('label');
+    labels.forEach(label => {
+        const filename = label.textContent.trim();
+        if (filename === selectedFile) {
+            label.style.background = 'rgba(76, 175, 80, 0.3)';
+            label.style.fontWeight = 'bold';
+        } else {
+            label.style.background = '';
+            label.style.fontWeight = 'normal';
+        }
+    });
+    
+    if (selectedFile) {
+        console.log('Currently selected:', selectedFile);
+    }
 }
 
 function onWindowResize() 
@@ -305,6 +488,29 @@ function onWindowResize()
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function onKeyDown(event) {
+    if (!selectedFile || currentMode !== 'select') return;
+    
+    switch (event.key.toLowerCase()) {
+        case 'g': // Translate (Grab in Blender)
+        case 't':
+            transformControl.setMode('translate');
+            console.log('Transform mode: Translate');
+            break;
+        case 'r': // Rotate
+            transformControl.setMode('rotate');
+            console.log('Transform mode: Rotate');
+            break;
+        case 's': // Scale
+            transformControl.setMode('scale');
+            console.log('Transform mode: Scale');
+            break;
+        case 'escape': // Deselect
+            deselectFile();
+            break;
+    }
 }
 
 function animate() 
