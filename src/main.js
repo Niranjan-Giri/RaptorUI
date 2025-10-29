@@ -14,6 +14,8 @@ let renderMode = 'points';
 let ambientLight = null;
 let directionalLight = null;
 let selectedFile = null;
+//This will be for the information of the selected objects
+let infoIcon = null; 
 
 // List of PLY files to load
 const plyFiles = [
@@ -25,6 +27,8 @@ const plyFiles = [
 init();
 loadAllPLYFiles();
 setupMenuControls();
+createInfoIcon();
+createInfoModal();
 
 function init() 
 {
@@ -69,6 +73,231 @@ function init()
     
     // Keyboard shortcuts for transform controls
     window.addEventListener('keydown', onKeyDown);
+    
+    // Update info icon position on render
+    renderer.domElement.addEventListener('mousemove', updateInfoIconPosition);
+}
+
+function createInfoIcon() {
+    infoIcon = document.createElement('div');
+    infoIcon.id = 'info-icon';
+    infoIcon.innerHTML = 'i';
+    infoIcon.style.position = 'absolute';
+    infoIcon.style.width = '24px';
+    infoIcon.style.height = '24px';
+    infoIcon.style.borderRadius = '50%';
+    infoIcon.style.backgroundColor = 'rgba(33, 150, 243, 0.9)';
+    infoIcon.style.color = 'white';
+    infoIcon.style.display = 'none';
+    infoIcon.style.justifyContent = 'center';
+    infoIcon.style.alignItems = 'center';
+    infoIcon.style.cursor = 'pointer';
+    infoIcon.style.fontWeight = 'bold';
+    infoIcon.style.fontSize = '16px';
+    infoIcon.style.fontFamily = 'Arial, sans-serif';
+    infoIcon.style.border = '2px solid white';
+    infoIcon.style.zIndex = '1000';
+    infoIcon.style.pointerEvents = 'auto';
+    infoIcon.style.transition = 'all 0.2s ease';
+    
+    infoIcon.addEventListener('mouseenter', () => {
+        infoIcon.style.transform = 'scale(1.1)';
+        infoIcon.style.backgroundColor = 'rgba(33, 150, 243, 1)';
+    });
+    
+    infoIcon.addEventListener('mouseleave', () => {
+        infoIcon.style.transform = 'scale(1)';
+        infoIcon.style.backgroundColor = 'rgba(33, 150, 243, 0.9)';
+    });
+    
+    infoIcon.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showInfoModal();
+    });
+    
+    document.body.appendChild(infoIcon);
+}
+
+function createInfoModal() {
+    const modal = document.createElement('div');
+    modal.id = 'info-modal';
+    modal.style.position = 'fixed';
+    modal.style.top = '0';
+    modal.style.left = '0';
+    modal.style.width = '100%';
+    modal.style.height = '100%';
+    modal.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+    modal.style.display = 'none';
+    modal.style.justifyContent = 'center';
+    modal.style.alignItems = 'center';
+    modal.style.zIndex = '10000';
+    modal.style.backdropFilter = 'blur(5px)';
+    
+    const modalContent = document.createElement('div');
+    modalContent.style.backgroundColor = '#2a2a2a';
+    modalContent.style.padding = '30px';
+    modalContent.style.borderRadius = '12px';
+    modalContent.style.maxWidth = '500px';
+    modalContent.style.width = '90%';
+    modalContent.style.maxHeight = '80vh';
+    modalContent.style.overflow = 'auto';
+    modalContent.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.5)';
+    modalContent.style.border = '1px solid rgba(255, 255, 255, 0.1)';
+    
+    const closeBtn = document.createElement('span');
+    closeBtn.innerHTML = '&times;';
+    closeBtn.style.float = 'right';
+    closeBtn.style.fontSize = '32px';
+    closeBtn.style.fontWeight = 'bold';
+    closeBtn.style.color = '#aaa';
+    closeBtn.style.cursor = 'pointer';
+    closeBtn.style.lineHeight = '20px';
+    closeBtn.style.transition = 'color 0.2s';
+    
+    closeBtn.addEventListener('mouseenter', () => {
+        closeBtn.style.color = '#fff';
+    });
+    
+    closeBtn.addEventListener('mouseleave', () => {
+        closeBtn.style.color = '#aaa';
+    });
+    
+    closeBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+    });
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.id = 'modal-content-info';
+    contentDiv.style.color = '#fff';
+    contentDiv.style.marginTop = '20px';
+    
+    modalContent.appendChild(closeBtn);
+    modalContent.appendChild(contentDiv);
+    modal.appendChild(modalContent);
+    
+    // Close when clicking outside
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            modal.style.display = 'none';
+        }
+    });
+    
+    document.body.appendChild(modal);
+}
+
+function showInfoModal() {
+    if (!selectedFile) return;
+    
+    const fileData = loadedFiles.get(selectedFile);
+    if (!fileData) return;
+    
+    const modal = document.getElementById('info-modal');
+    const contentDiv = document.getElementById('modal-content-info');
+    
+    // Get object information
+    const geometry = fileData.geometry;
+    const object = fileData.object;
+    
+    const vertexCount = geometry.attributes.position.count;
+    const position = object.position;
+    const rotation = object.rotation;
+    const scale = object.scale;
+    
+    // Calculate bounding box info
+    geometry.computeBoundingBox();
+    const bbox = geometry.boundingBox;
+    const size = new THREE.Vector3();
+    bbox.getSize(size);
+    
+    // Build HTML content
+    let html = `
+        <h2 style="margin-top: 0; color: #4CAF50; border-bottom: 2px solid #4CAF50; padding-bottom: 10px;">
+            Object Information
+        </h2>
+        <div style="line-height: 1.8;">
+            <p><strong style="color: #2196F3;">File Name:</strong> ${selectedFile}</p>
+            <p><strong style="color: #2196F3;">File Path:</strong> ${fileData.filepath}</p>
+            <p><strong style="color: #2196F3;">Render Mode:</strong> ${renderMode === 'points' ? 'Point Cloud' : '3D Mesh'}</p>
+            <hr style="border: none; border-top: 1px solid rgba(255, 255, 255, 0.1); margin: 15px 0;">
+            
+            <h3 style="color: #FF9800; margin-bottom: 10px;">Geometry</h3>
+            <p><strong>Vertex Count:</strong> ${vertexCount.toLocaleString()}</p>
+            <p><strong>Bounding Box Size:</strong></p>
+            <ul style="margin-left: 20px;">
+                <li>Width (X): ${size.x.toFixed(4)}</li>
+                <li>Height (Y): ${size.y.toFixed(4)}</li>
+                <li>Depth (Z): ${size.z.toFixed(4)}</li>
+            </ul>
+            
+            <hr style="border: none; border-top: 1px solid rgba(255, 255, 255, 0.1); margin: 15px 0;">
+            
+            <h3 style="color: #FF9800; margin-bottom: 10px;">Transform</h3>
+            <p><strong>Position:</strong></p>
+            <ul style="margin-left: 20px;">
+                <li>X: ${position.x.toFixed(4)}</li>
+                <li>Y: ${position.y.toFixed(4)}</li>
+                <li>Z: ${position.z.toFixed(4)}</li>
+            </ul>
+            
+            <p><strong>Rotation (radians):</strong></p>
+            <ul style="margin-left: 20px;">
+                <li>X: ${rotation.x.toFixed(4)}</li>
+                <li>Y: ${rotation.y.toFixed(4)}</li>
+                <li>Z: ${rotation.z.toFixed(4)}</li>
+            </ul>
+            
+            <p><strong>Scale:</strong></p>
+            <ul style="margin-left: 20px;">
+                <li>X: ${scale.x.toFixed(4)}</li>
+                <li>Y: ${scale.y.toFixed(4)}</li>
+                <li>Z: ${scale.z.toFixed(4)}</li>
+            </ul>
+        </div>
+    `;
+    
+    contentDiv.innerHTML = html;
+    modal.style.display = 'flex';
+}
+
+function updateInfoIconPosition() {
+    if (!selectedFile || !infoIcon) return;
+    
+    const fileData = loadedFiles.get(selectedFile);
+    if (!fileData || !fileData.object || !fileData.visible) {
+        infoIcon.style.display = 'none';
+        return;
+    }
+    
+    // Get the object's bounding box in world space
+    const geometry = fileData.geometry;
+    geometry.computeBoundingBox();
+    const bbox = geometry.boundingBox;
+    
+    // I am placing the info icon a little bit in the right of the selected object
+    const cornerPosition = new THREE.Vector3(
+        bbox.max.x,
+        bbox.max.y,
+        bbox.max.z
+    );
+    
+    // Apply the object's world transform to the corner
+    fileData.object.localToWorld(cornerPosition);
+    
+    // Project to screen space
+    const screenPosition = cornerPosition.clone().project(camera);
+    
+    // Convert to pixel coordinates
+    const x = (screenPosition.x * 0.5 + 0.5) * window.innerWidth;
+    const y = (screenPosition.y * -0.5 + 0.5) * window.innerHeight;
+    
+    // Check if object is in front of camera
+    if (screenPosition.z < 1) {
+        infoIcon.style.display = 'flex';
+        infoIcon.style.left = `${x + 10}px`;
+        infoIcon.style.top = `${y - 10}px`;
+    } else {
+        infoIcon.style.display = 'none';
+    }
 }
 
 function setupMenuControls() 
@@ -458,6 +687,12 @@ function deselectFile() {
         transformControl.enabled = false;
         transformControl.visible = false;
     }
+    
+    // Hide info icon
+    if (infoIcon) {
+        infoIcon.style.display = 'none';
+    }
+    
     updateObjectLabelsUI();
 }
 
@@ -518,4 +753,9 @@ function animate()
     requestAnimationFrame(animate);
     controls.update();
     renderer.render(scene, camera);
+    
+    // Update info icon position every frame
+    if (selectedFile) {
+        updateInfoIconPosition();
+    }
 }
