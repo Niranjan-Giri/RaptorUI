@@ -9,7 +9,7 @@ let currentMode = 'orbit';
 let raycaster, mouse;
 
 // Changed to support multiple files
-let loadedFiles = new Map(); // Store in the format filename: { geometry, object, visible, color
+let loadedFiles = new Map(); // Store in the format filename:  geometry, object, visible, color
 let renderMode = 'points';
 let ambientLight = null;
 let directionalLight = null;
@@ -176,8 +176,7 @@ function createInfoModal() {
     modalContent.appendChild(closeBtn);
     modalContent.appendChild(contentDiv);
     modal.appendChild(modalContent);
-    
-    // Close when clicking outside
+
     modal.addEventListener('click', (e) => {
         if (e.target === modal) {
             modal.style.display = 'none';
