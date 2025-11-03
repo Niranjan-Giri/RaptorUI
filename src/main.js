@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
-
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { downsampleGeometry } from './downsample.js';
 
 let scene, camera, renderer, controls, transformControl;
 let currentMode = 'orbit';
 let raycaster, mouse;
+
 
 // Changed to support multiple files
 let loadedFiles = new Map(); // Store in the format filename:  geometry, object, visible, color
@@ -22,8 +23,6 @@ const plyFiles = [
     '/B3_S4.ply',
     '/B3_S2.ply',
     '/B3_S5.ply',
-    //'/Bldg3_Stage1_full_building_registered.ply',
-    //'/Bldg3_Stage2_full_building_registered.ply',
 ];
 
 init();
@@ -542,6 +541,10 @@ function loadAllPLYFiles()
 
             // Process geometry
             processGeometryColors(geometry);
+            
+            // Apply automatic downsampling
+            console.log(`Original ${filename}: ${geometry.attributes.position.count} points`);
+            geometry = downsampleGeometry(geometry);
 
             // Store file data
             loadedFiles.set(filename, {
