@@ -22,7 +22,7 @@ let infoIcon = null;
 const plyFiles = [
     '/B3_S4.ply',
     '/B3_S2.ply',
-    //'/B3_S5.ply',
+    '/B3_S5.ply',
 ];
 
 init();

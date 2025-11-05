@@ -3,8 +3,8 @@ import * as THREE from 'three';
 // These can be used for downsample: 'none', 'random', 'grid', or 'distance'
 //In my opinion, grid is the best balance
 const DOWNSAMPLE_METHOD = 'grid'; // Default method (grid is good balance of speed/quality)
-const DOWNSAMPLE_RATIO = 0.2; // For random sampling (0.5 = 50% of points)
-const GRID_SIZE = 0.05; // For grid sampling
+const DOWNSAMPLE_RATIO = 0.03; // For random sampling (0.5 = 50% of points)
+const GRID_SIZE = 0.03; // For grid sampling
 const MIN_DISTANCE = 0.01; // For distance sampling
 
 /**
