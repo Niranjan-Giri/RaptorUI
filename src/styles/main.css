@@ -176,6 +176,73 @@ body
     opacity: 0.7;
 }
 
+.query-input-container 
+{
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+#query-input 
+{
+    flex: 1;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    color: white;
+    font-size: 14px;
+    font-family: Arial, sans-serif;
+    transition: all 0.2s;
+}
+
+#query-input:focus 
+{
+    outline: none;
+    background: rgba(255, 255, 255, 0.15);
+    border-color: #4CAF50;
+}
+
+#query-input::placeholder 
+{
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.query-send-btn 
+{
+    width: 40px;
+    height: 40px;
+    padding: 8px;
+    background: #4CAF50;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    flex-shrink: 0;
+}
+
+.query-send-btn svg 
+{
+    width: 20px;
+    height: 20px;
+}
+
+.query-send-btn:hover 
+{
+    background: #45a049;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.query-send-btn:active 
+{
+    transform: translateY(0);
+}
+
 
 #object-labels-section label 
 {

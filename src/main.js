@@ -22,7 +22,7 @@ let infoIcon = null;
 const plyFiles = [
     '/B3_S4.ply',
     '/B3_S2.ply',
-    '/B3_S5.ply',
+    //'/B3_S5.ply',
 ];
 
 init();
@@ -82,7 +82,7 @@ function init()
 function createInfoIcon() {
     infoIcon = document.createElement('div');
     infoIcon.id = 'info-icon';
-    infoIcon.innerHTML = 'i';
+    infoIcon.innerHTML = '&#9432;';
     infoIcon.style.position = 'absolute';
     infoIcon.style.width = '24px';
     infoIcon.style.height = '24px';
@@ -315,6 +315,19 @@ function setupMenuControls()
     // Render mode buttons
     document.getElementById('btn-point-cloud').addEventListener('click', () => setRenderMode('points'));
     document.getElementById('btn-3d-mesh').addEventListener('click', () => setRenderMode('mesh'));
+    
+    // Query input and send button
+    const queryInput = document.getElementById('query-input');
+    const querySendBtn = document.getElementById('query-send-btn');
+    
+    querySendBtn.addEventListener('click', handleQuerySend);
+    
+    // Allow Enter key to send query
+    queryInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            handleQuerySend();
+        }
+    });
 }
 
 function setMode(mode) 
@@ -397,6 +410,24 @@ function resetView()
     camera.position.set(0, 0, 2);
     controls.target.set(0, 0, 0);
     controls.update();
+}
+
+function handleQuerySend() {
+    const queryInput = document.getElementById('query-input');
+    const query = queryInput.value.trim();
+    
+    if (query === '') {
+        console.log('Empty query');
+        return;
+    }
+    
+    console.log('Query submitted:', query);
+    
+    // TODO: Connect to backend LLM here
+    // For now, just log the query
+    
+    // Clear input after sending
+    queryInput.value = '';
 }
 
 function onCanvasClick(event) 
