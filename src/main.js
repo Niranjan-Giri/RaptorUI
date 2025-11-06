@@ -10,8 +10,9 @@ let raycaster, mouse;
 
 
 // Changed to support multiple files
-let loadedFiles = new Map(); // Store in the format filename:  geometry, object, visible, color
+let loadedFiles = new Map(); // Store in the format filename: { geometry, object, visible, originalColors, codedColors, filepath }
 let renderMode = 'points';
+let colorMode = 'original'; // 'original' or 'coded'
 let ambientLight = null;
 let directionalLight = null;
 let selectedFile = null;
@@ -316,6 +317,10 @@ function setupMenuControls()
     document.getElementById('btn-point-cloud').addEventListener('click', () => setRenderMode('points'));
     document.getElementById('btn-3d-mesh').addEventListener('click', () => setRenderMode('mesh'));
     
+    // Color mode buttons
+    document.getElementById('btn-original-color').addEventListener('click', () => setColorMode('original'));
+    document.getElementById('btn-coded-color').addEventListener('click', () => setColorMode('coded'));
+    
     // Query input and send button
     const queryInput = document.getElementById('query-input');
     const querySendBtn = document.getElementById('query-send-btn');
@@ -369,6 +374,25 @@ function setMode(mode)
        
         renderer.domElement.style.cursor = 'crosshair';
     }
+}
+
+function setColorMode(mode) {
+    colorMode = mode;
+    
+    // Update button states
+    if (mode === 'original') {
+        document.getElementById('btn-original-color').classList.add('active');
+        document.getElementById('btn-coded-color').classList.remove('active');
+    } else {
+        document.getElementById('btn-original-color').classList.remove('active');
+        document.getElementById('btn-coded-color').classList.add('active');
+    }
+    
+    // Re-apply colors to all loaded files
+    loadedFiles.forEach((fileData, filename) => {
+        applyColorMode(fileData.geometry, filename);
+        updateFileRender(filename);
+    });
 }
 
 function setRenderMode(mode) 
@@ -570,20 +594,35 @@ function loadAllPLYFiles()
             // Get filename from path
             const filename = filepath.split('/').pop();
 
-            // Process geometry
-            processGeometryColors(geometry);
-            
-            // Apply automatic downsampling
             console.log(`Original ${filename}: ${geometry.attributes.position.count} points`);
+            
+            // Apply downsampling first with default colors
+            if (!geometry.attributes.color) {
+                const defaultColors = createDefaultColors(geometry.attributes.position.count);
+                geometry.setAttribute('color', new THREE.Float32BufferAttribute(defaultColors, 3));
+            }
+            
             geometry = downsampleGeometry(geometry);
 
-            // Store file data
+            // After downsampling, store original colors and create coded colors
+            const originalColors = geometry.attributes.color ? 
+                geometry.attributes.color.array.slice() : 
+                createDefaultColors(geometry.attributes.position.count);
+
+            const codedColors = createCodedColors(geometry);
+
+            // Store file data with both color sets
             loadedFiles.set(filename, {
                 geometry: geometry,
                 object: null,
                 visible: true,
+                originalColors: originalColors,
+                codedColors: codedColors,
                 filepath: filepath
             });
+
+            // Apply current color mode
+            applyColorMode(geometry, filename);
 
             // Render this file
             updateFileRender(filename);
@@ -601,7 +640,20 @@ function loadAllPLYFiles()
     });
 }
 
-function processGeometryColors(geometry) {
+function createDefaultColors(pointCount) {
+    const colors = new Float32Array(pointCount * 3);
+    for (let i = 0; i < pointCount * 3; i++) {
+        colors[i] = 1.0; // Default to white
+    }
+    return colors;
+}
+
+function createDefaultColorsFromDownsampled(geometry) {
+    const pointCount = geometry.attributes.position.count;
+    return createDefaultColors(pointCount);
+}
+
+function createCodedColors(geometry) {
     geometry.computeBoundingBox();
     const bbox = geometry.boundingBox;
     const center = new THREE.Vector3();
@@ -651,9 +703,18 @@ function processGeometryColors(geometry) {
         colors.push(r, g, b);
     }
 
+    return new Float32Array(colors);
+}
+
+function applyColorMode(geometry, filename) {
+    const fileData = loadedFiles.get(filename);
+    if (!fileData) return;
+
+    const colorsToUse = colorMode === 'original' ? fileData.originalColors : fileData.codedColors;
+    
     geometry.setAttribute(
         'color',
-        new THREE.Float32BufferAttribute(colors, 3)
+        new THREE.Float32BufferAttribute(colorsToUse, 3)
     );
 }
 

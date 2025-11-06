@@ -1,130 +1,114 @@
 import * as THREE from 'three';
 
-// These can be used for downsample: 'none', 'random', 'grid', or 'distance'
-//In my opinion, grid is the best balance
-const DOWNSAMPLE_METHOD = 'grid'; // Default method (grid is good balance of speed/quality)
-const DOWNSAMPLE_RATIO = 0.03; // For random sampling (0.5 = 50% of points)
-const GRID_SIZE = 0.03; // For grid sampling
-const MIN_DISTANCE = 0.01; // For distance sampling
+// Grid-based downsampling configuration
+const GRID_SIZE = 0.015; // Size of each grid cell - smaller = more detail, larger = more downsampling
+const DOWNSAMPLE_THRESHOLD = 5000000; // Only downsample if points exceed this number
+const USE_AVERAGING = true; // Average points in each cell instead of just keeping first point
 
 /**
- * Automatically downsamples geometry when loaded
- * Called directly during geometry processing
+ * Downsamples geometry using improved grid-based sampling
+ * - Only applies downsampling if points exceed DOWNSAMPLE_THRESHOLD
+ * - Uses spatial grid to reduce points while preserving structure
+ * - Optionally averages points within each cell for better quality
  */
-export function downsampleGeometry(geometry, method = DOWNSAMPLE_METHOD) {
-    if (method === 'none') {
+export function downsampleGeometry(geometry) {
+    const positions = geometry.attributes.position;
+    
+    // Check if the number of points exceeds the threshold
+    if (positions.count <= DOWNSAMPLE_THRESHOLD) {
+        console.log(`Skipping downsampling: ${positions.count} points (threshold: ${DOWNSAMPLE_THRESHOLD})`);
         return geometry;
     }
     
-    const positions = geometry.attributes.position;
     const colors = geometry.attributes.color;
     const normals = geometry.attributes.normal;
     
-    let indices = [];
+    // Improved grid-based sampling
+    const grid = new Map();
     
-    if (method === 'random') {
-        // Random sampling
-        for (let i = 0; i < positions.count; i++) {
-            if (Math.random() < DOWNSAMPLE_RATIO) {
-                indices.push(i);
-            }
-        }
-    } else if (method === 'grid') {
-        // Grid-based sampling
-        const grid = new Map();
+    // First pass: collect all points in each cell
+    for (let i = 0; i < positions.count; i++) {
+        const x = positions.getX(i);
+        const y = positions.getY(i);
+        const z = positions.getZ(i);
         
-        for (let i = 0; i < positions.count; i++) {
-            const x = positions.getX(i);
-            const y = positions.getY(i);
-            const z = positions.getZ(i);
-            
-            // Calculate grid cell
-            const cellX = Math.floor(x / GRID_SIZE);
-            const cellY = Math.floor(y / GRID_SIZE);
-            const cellZ = Math.floor(z / GRID_SIZE);
-            const cellKey = `${cellX},${cellY},${cellZ}`;
-            
-            // Keep first point in each cell
-            if (!grid.has(cellKey)) {
-                grid.set(cellKey, i);
-                indices.push(i);
-            }
-        }
-    } else if (method === 'distance') {
-        // Distance-based sampling with spatial grid optimization
-        const minDistSq = MIN_DISTANCE * MIN_DISTANCE;
-        const grid = new Map();
-        const cellSize = MIN_DISTANCE; // Use MIN_DISTANCE as cell size
+        // Calculate grid cell
+        const cellX = Math.floor(x / GRID_SIZE);
+        const cellY = Math.floor(y / GRID_SIZE);
+        const cellZ = Math.floor(z / GRID_SIZE);
+        const cellKey = `${cellX},${cellY},${cellZ}`;
         
-        for (let i = 0; i < positions.count; i++) {
-            const x = positions.getX(i);
-            const y = positions.getY(i);
-            const z = positions.getZ(i);
+        if (!grid.has(cellKey)) {
+            grid.set(cellKey, []);
+        }
+        grid.get(cellKey).push(i);
+    }
+    
+    // Second pass: process each cell
+    const resultPoints = [];
+    
+    for (const [cellKey, pointIndices] of grid.entries()) {
+        if (USE_AVERAGING && pointIndices.length > 1) {
+            // Average all points in the cell for better quality
+            let sumX = 0, sumY = 0, sumZ = 0;
+            let sumR = 0, sumG = 0, sumB = 0;
+            let sumNX = 0, sumNY = 0, sumNZ = 0;
             
-            // Calculate grid cell
-            const cellX = Math.floor(x / cellSize);
-            const cellY = Math.floor(y / cellSize);
-            const cellZ = Math.floor(z / cellSize);
-            
-            // Check neighboring cells (3x3x3 = 27 cells)
-            let tooClose = false;
-            for (let dx = -1; dx <= 1 && !tooClose; dx++) {
-                for (let dy = -1; dy <= 1 && !tooClose; dy++) {
-                    for (let dz = -1; dz <= 1 && !tooClose; dz++) {
-                        const neighborKey = `${cellX + dx},${cellY + dy},${cellZ + dz}`;
-                        const neighborIndices = grid.get(neighborKey);
-                        
-                        if (neighborIndices) {
-                            for (const prevIdx of neighborIndices) {
-                                const dx2 = x - positions.getX(prevIdx);
-                                const dy2 = y - positions.getY(prevIdx);
-                                const dz2 = z - positions.getZ(prevIdx);
-                                const distSq = dx2*dx2 + dy2*dy2 + dz2*dz2;
-                                
-                                if (distSq < minDistSq) {
-                                    tooClose = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+            for (const idx of pointIndices) {
+                sumX += positions.getX(idx);
+                sumY += positions.getY(idx);
+                sumZ += positions.getZ(idx);
+                
+                if (colors) {
+                    sumR += colors.getX(idx);
+                    sumG += colors.getY(idx);
+                    sumB += colors.getZ(idx);
+                }
+                
+                if (normals) {
+                    sumNX += normals.getX(idx);
+                    sumNY += normals.getY(idx);
+                    sumNZ += normals.getZ(idx);
                 }
             }
             
-            if (!tooClose) {
-                // Add point to its cell
-                const cellKey = `${cellX},${cellY},${cellZ}`;
-                if (!grid.has(cellKey)) {
-                    grid.set(cellKey, []);
-                }
-                grid.get(cellKey).push(i);
-                indices.push(i);
-            }
+            const count = pointIndices.length;
+            resultPoints.push({
+                position: [sumX / count, sumY / count, sumZ / count],
+                color: colors ? [sumR / count, sumG / count, sumB / count] : [1, 1, 1],
+                normal: normals ? [sumNX / count, sumNY / count, sumNZ / count] : null
+            });
+        } else {
+            // Just use the first point in the cell
+            const idx = pointIndices[0];
+            resultPoints.push({
+                position: [positions.getX(idx), positions.getY(idx), positions.getZ(idx)],
+                color: colors ? [colors.getX(idx), colors.getY(idx), colors.getZ(idx)] : [1, 1, 1],
+                normal: normals ? [normals.getX(idx), normals.getY(idx), normals.getZ(idx)] : null
+            });
         }
     }
     
-    // Create new geometry with selected points
-    const newPositions = new Float32Array(indices.length * 3);
-    const newColors = new Float32Array(indices.length * 3);
-    const newNormals = normals ? new Float32Array(indices.length * 3) : null;
+    // Create new geometry with processed points
+    const newPositions = new Float32Array(resultPoints.length * 3);
+    const newColors = new Float32Array(resultPoints.length * 3);
+    const newNormals = normals ? new Float32Array(resultPoints.length * 3) : null;
     
-    for (let i = 0; i < indices.length; i++) {
-        const idx = indices[i];
+    for (let i = 0; i < resultPoints.length; i++) {
+        const point = resultPoints[i];
         
-        newPositions[i * 3] = positions.getX(idx);
-        newPositions[i * 3 + 1] = positions.getY(idx);
-        newPositions[i * 3 + 2] = positions.getZ(idx);
+        newPositions[i * 3] = point.position[0];
+        newPositions[i * 3 + 1] = point.position[1];
+        newPositions[i * 3 + 2] = point.position[2];
         
-        if (colors) {
-            newColors[i * 3] = colors.getX(idx);
-            newColors[i * 3 + 1] = colors.getY(idx);
-            newColors[i * 3 + 2] = colors.getZ(idx);
-        }
+        newColors[i * 3] = point.color[0];
+        newColors[i * 3 + 1] = point.color[1];
+        newColors[i * 3 + 2] = point.color[2];
         
-        if (normals && newNormals) {
-            newNormals[i * 3] = normals.getX(idx);
-            newNormals[i * 3 + 1] = normals.getY(idx);
-            newNormals[i * 3 + 2] = normals.getZ(idx);
+        if (newNormals && point.normal) {
+            newNormals[i * 3] = point.normal[0];
+            newNormals[i * 3 + 1] = point.normal[1];
+            newNormals[i * 3 + 2] = point.normal[2];
         }
     }
     
@@ -137,7 +121,7 @@ export function downsampleGeometry(geometry, method = DOWNSAMPLE_METHOD) {
         newGeometry.computeVertexNormals();
     }
     
-    console.log(`Downsampled from ${positions.count} to ${indices.length} points (${(indices.length / positions.count * 100).toFixed(1)}%)`);
+    console.log(`Downsampled from ${positions.count} to ${resultPoints.length} points (${(resultPoints.length / positions.count * 100).toFixed(1)}%)`);
     
     return newGeometry;
 }
