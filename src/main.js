@@ -1,13 +1,14 @@
 import * as THREE from 'three';
-import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import { downsampleGeometry } from './downsample.js';
+import { LoaderManager } from './loaderManager.js';
 
 let scene, camera, renderer, controls, transformControl;
 let currentMode = 'orbit';
 let raycaster, mouse;
 
+// Web Worker loader manager
+let loaderManager;
 
 // Changed to support multiple files
 let loadedFiles = new Map(); // Store in the format filename: { geometry, object, visible, originalColors, codedColors, filepath }
@@ -19,16 +20,23 @@ let selectedFile = null;
 //This will be for the information of the selected objects
 let infoIcon = null; 
 
-// List of PLY files to load
 const plyFiles = [
     '/B3_S4.ply',
     '/B3_S2.ply',
     '/B3_S5.ply',
 ];
 
+// Initialize loader manager
+loaderManager = new LoaderManager(
+    handleFileLoaded,
+    handleFileProgress,
+    handleFileError
+);
+
 init();
 loadAllPLYFiles();
 setupMenuControls();
+createFileCheckboxes();
 createInfoIcon();
 createInfoModal();
 
@@ -78,6 +86,9 @@ function init()
     
     // Update info icon position on render
     renderer.domElement.addEventListener('mousemove', updateInfoIconPosition);
+
+    // Start render loop immediately so previews can appear as soon as they are ready
+    animate();
 }
 
 function createInfoIcon() {
@@ -583,61 +594,126 @@ function updateFileRender(filename)
 
 function loadAllPLYFiles() 
 {
-    const loader = new PLYLoader();
-    let loadedCount = 0;
-
-    plyFiles.forEach((filepath, index) => {
-        loader.load(filepath, function (geometry) {
-            geometry.center();
-            geometry.computeVertexNormals();
-
-            // Get filename from path
-            const filename = filepath.split('/').pop();
-
-            console.log(`Original ${filename}: ${geometry.attributes.position.count} points`);
-            
-            // Apply downsampling first with default colors
-            if (!geometry.attributes.color) {
-                const defaultColors = createDefaultColors(geometry.attributes.position.count);
-                geometry.setAttribute('color', new THREE.Float32BufferAttribute(defaultColors, 3));
-            }
-            
-            geometry = downsampleGeometry(geometry);
-
-            // After downsampling, store original colors and create coded colors
-            const originalColors = geometry.attributes.color ? 
-                geometry.attributes.color.array.slice() : 
-                createDefaultColors(geometry.attributes.position.count);
-
-            const codedColors = createCodedColors(geometry);
-
-            // Store file data with both color sets
-            loadedFiles.set(filename, {
-                geometry: geometry,
-                object: null,
-                visible: true,
-                originalColors: originalColors,
-                codedColors: codedColors,
-                filepath: filepath
-            });
-
-            // Apply current color mode
-            applyColorMode(geometry, filename);
-
-            // Render this file
-            updateFileRender(filename);
-
-            loadedCount++;
-            
-            // Update UI when all files are loaded
-            if (loadedCount === plyFiles.length) {
-                createFileCheckboxes();
-                animate();
-            }
-        }, undefined, function(error) {
-            console.error(`Error loading ${filepath}:`, error);
+    console.log('[Main] Starting to load PLY files with Web Workers...');
+    
+    plyFiles.forEach((filepath) => {
+        const filename = filepath.split('/').pop();
+        
+        // Initialize file entry with loading state
+        loadedFiles.set(filename, {
+            geometry: null,
+            object: null,
+            visible: true,
+            originalColors: null,
+            codedColors: null,
+            filepath: filepath,
+            isPreview: true,
+            loading: true
         });
+
+        // Start loading with worker
+        loaderManager.loadPLY(filepath, filename);
     });
+    
+    // Update UI to show loading state
+    createFileCheckboxes();
+}
+
+/**
+ * Callback when file data is loaded (called for previews and final data)
+ */
+function handleFileLoaded(filename, geometry, metadata) {
+    const { isPreview, totalExpectedPoints, wasDownsampled } = metadata;
+    
+    const fileData = loadedFiles.get(filename);
+    if (!fileData) {
+        console.warn(`File ${filename} not found in loadedFiles`);
+        return;
+    }
+
+    // Ensure geometry has all required attributes
+    ensureGeometryHasNormals(geometry);
+    if (!geometry.attributes.color) {
+        const defaultColors = createDefaultColors(geometry.attributes.position.count);
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(defaultColors, 3));
+    }
+
+    // Store colors
+    const originalColors = geometry.attributes.color.array.slice();
+    const codedColors = createCodedColors(geometry);
+
+    // Update file data
+    loadedFiles.set(filename, {
+        ...fileData,
+        geometry: geometry,
+        originalColors: originalColors,
+        codedColors: codedColors,
+        isPreview: isPreview,
+        loading: isPreview,
+        wasDownsampled: wasDownsampled
+    });
+
+    // Apply current color mode
+    applyColorMode(geometry, filename);
+    
+    // Render the file
+    updateFileRender(filename);
+
+    // Update UI
+    createFileCheckboxes();
+    updateObjectLabelsUI();
+
+    const pointCount = geometry.attributes.position.count.toLocaleString();
+    const status = isPreview ? `Preview (${pointCount} points)` : `Complete (${pointCount} points)`;
+    console.log(`[${filename}] ${status}${wasDownsampled ? ' - downsampled' : ''}`);
+
+    // If this was the selected file and we upgraded it, reattach transform controls
+    if (!isPreview && selectedFile === filename) {
+        const upgradedData = loadedFiles.get(filename);
+        if (upgradedData && upgradedData.object) {
+            transformControl.attach(upgradedData.object);
+            transformControl.enabled = true;
+            transformControl.visible = true;
+            updateInfoIconPosition();
+        }
+    }
+}
+
+/**
+ * Callback for file loading progress
+ */
+function handleFileProgress(filename, message, progress) {
+    console.log(`[${filename}] ${message} (${progress.toFixed(1)}%)`);
+    
+    // You can update UI here with progress bar if desired
+    // For now, just update the checkbox label
+    const fileData = loadedFiles.get(filename);
+    if (fileData) {
+        fileData.loadingMessage = message;
+        fileData.loadingProgress = progress;
+        createFileCheckboxes();
+    }
+}
+
+/**
+ * Callback for file loading errors
+ */
+function handleFileError(filename, error) {
+    console.error(`[${filename}] Load error:`, error);
+    
+    const fileData = loadedFiles.get(filename);
+    if (fileData) {
+        fileData.loading = false;
+        fileData.error = error;
+        createFileCheckboxes();
+    }
+}
+
+function ensureGeometryHasNormals(geometry) {
+    if (!geometry) {
+        return;
+    }
+    geometry.computeVertexNormals();
 }
 
 function createDefaultColors(pointCount) {
@@ -646,11 +722,6 @@ function createDefaultColors(pointCount) {
         colors[i] = 1.0; // Default to white
     }
     return colors;
-}
-
-function createDefaultColorsFromDownsampled(geometry) {
-    const pointCount = geometry.attributes.position.count;
-    return createDefaultColors(pointCount);
 }
 
 function createCodedColors(geometry) {
@@ -720,14 +791,35 @@ function applyColorMode(geometry, filename) {
 
 function createFileCheckboxes() {
     const container = document.getElementById('object-labels-section');
+    if (!container) {
+        return;
+    }
     const contentDiv = container.querySelector('.section-content');
+    if (!contentDiv) {
+        return;
+    }
+
     contentDiv.innerHTML = '';
+
+    if (loadedFiles.size === 0) {
+        contentDiv.textContent = 'Loading objects...';
+        return;
+    }
 
     loadedFiles.forEach((fileData, filename) => {
         const label = document.createElement('label');
-        label.style.display = 'block';
+        label.dataset.filename = filename;
+        label.style.display = 'flex';
+        label.style.alignItems = 'center';
         label.style.marginBottom = '8px';
         label.style.cursor = 'pointer';
+        label.style.flexDirection = 'column';
+        label.style.alignItems = 'flex-start';
+
+        const topRow = document.createElement('div');
+        topRow.style.display = 'flex';
+        topRow.style.alignItems = 'center';
+        topRow.style.width = '100%';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
@@ -737,8 +829,58 @@ function createFileCheckboxes() {
             toggleFileVisibility(filename, e.target.checked);
         });
 
-        label.appendChild(checkbox);
-        label.appendChild(document.createTextNode(filename));
+        const nameSpan = document.createElement('span');
+        
+        // Show status based on loading state
+        let statusText = '';
+        if (fileData.error) {
+            statusText = ` (error: ${fileData.error})`;
+            nameSpan.style.color = '#ff6b6b';
+        } else if (fileData.loading) {
+            statusText = fileData.isPreview ? ' (loading...)' : ' (processing...)';
+            nameSpan.style.color = '#ffa500';
+        } else if (fileData.isPreview) {
+            statusText = ' (preview)';
+            nameSpan.style.color = '#ffd700';
+        } else if (fileData.wasDownsampled) {
+            statusText = ' (downsampled)';
+        }
+        
+        nameSpan.textContent = filename + statusText;
+
+        topRow.appendChild(checkbox);
+        topRow.appendChild(nameSpan);
+        label.appendChild(topRow);
+
+        // Show progress bar if loading
+        if (fileData.loading && fileData.loadingProgress !== undefined) {
+            const progressBar = document.createElement('div');
+            progressBar.style.width = '100%';
+            progressBar.style.height = '4px';
+            progressBar.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+            progressBar.style.marginTop = '4px';
+            progressBar.style.borderRadius = '2px';
+            progressBar.style.overflow = 'hidden';
+
+            const progressFill = document.createElement('div');
+            progressFill.style.width = `${fileData.loadingProgress}%`;
+            progressFill.style.height = '100%';
+            progressFill.style.backgroundColor = '#4CAF50';
+            progressFill.style.transition = 'width 0.3s ease';
+
+            progressBar.appendChild(progressFill);
+            label.appendChild(progressBar);
+
+            if (fileData.loadingMessage) {
+                const messageSpan = document.createElement('span');
+                messageSpan.textContent = fileData.loadingMessage;
+                messageSpan.style.fontSize = '10px';
+                messageSpan.style.color = '#aaa';
+                messageSpan.style.marginTop = '2px';
+                label.appendChild(messageSpan);
+            }
+        }
+
         contentDiv.appendChild(label);
     });
 }
@@ -794,12 +936,18 @@ function deselectFile() {
 
 function updateObjectLabelsUI() {
     const container = document.getElementById('object-labels-section');
+    if (!container) {
+        return;
+    }
     const contentDiv = container.querySelector('.section-content');
+    if (!contentDiv) {
+        return;
+    }
     
     // Update checkboxes to highlight selected file
     const labels = contentDiv.querySelectorAll('label');
     labels.forEach(label => {
-        const filename = label.textContent.trim();
+        const filename = label.dataset.filename || label.textContent.trim();
         if (filename === selectedFile) {
             label.style.background = 'rgba(76, 175, 80, 0.3)';
             label.style.fontWeight = 'bold';
