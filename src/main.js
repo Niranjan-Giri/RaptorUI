@@ -14,6 +14,7 @@ let loaderManager;
 let loadedFiles = new Map(); // Store in the format filename: { geometry, object, visible, originalColors, codedColors, filepath }
 let renderMode = 'points';
 let colorMode = 'original'; // 'original' or 'coded'
+let qualityMode = 'downsampled'; // 'downsampled' or 'original'
 let ambientLight = null;
 let directionalLight = null;
 let selectedFile = null;
@@ -328,6 +329,10 @@ function setupMenuControls()
     document.getElementById('btn-point-cloud').addEventListener('click', () => setRenderMode('points'));
     document.getElementById('btn-3d-mesh').addEventListener('click', () => setRenderMode('mesh'));
     
+    // Quality mode buttons
+    document.getElementById('btn-downsampled').addEventListener('click', () => setQualityMode('downsampled'));
+    document.getElementById('btn-original-quality').addEventListener('click', () => setQualityMode('original'));
+    
     // Color mode buttons
     document.getElementById('btn-original-color').addEventListener('click', () => setColorMode('original'));
     document.getElementById('btn-coded-color').addEventListener('click', () => setColorMode('coded'));
@@ -403,6 +408,53 @@ function setColorMode(mode) {
     loadedFiles.forEach((fileData, filename) => {
         applyColorMode(fileData.geometry, filename);
         updateFileRender(filename);
+    });
+}
+
+function setQualityMode(mode) {
+    qualityMode = mode;
+    
+    // Update button states
+    if (mode === 'downsampled') {
+        document.getElementById('btn-downsampled').classList.add('active');
+        document.getElementById('btn-original-quality').classList.remove('active');
+    } else {
+        document.getElementById('btn-downsampled').classList.remove('active');
+        document.getElementById('btn-original-quality').classList.add('active');
+    }
+    
+    // Update loader manager quality mode
+    loaderManager.setQualityMode(mode);
+    
+    // Cancel any in-progress loads
+    console.log(`Switching to ${mode} quality mode...`);
+    loaderManager.cancelAll();
+    
+    // Store current file data (keep objects visible during reload)
+    const currentFiles = new Map();
+    loadedFiles.forEach((fileData, filename) => {
+        currentFiles.set(filename, {
+            object: fileData.object,
+            visible: fileData.visible,
+            filepath: fileData.filepath
+        });
+    });
+    
+    // Mark all files as loading but keep existing geometry/objects
+    loadedFiles.forEach((fileData, filename) => {
+        fileData.loading = true;
+        fileData.isPreview = true;
+        fileData.loadingMessage = `Switching to ${mode} mode...`;
+        fileData.loadingProgress = 0;
+    });
+    
+    // Update UI to show loading state
+    createFileCheckboxes();
+    
+    // Reload all files with new quality (objects stay visible)
+    plyFiles.forEach((filepath) => {
+        const filename = filepath.split('/').pop();
+        loaderManager.loadPLY(filepath, filename);
     });
 }
 
@@ -623,7 +675,7 @@ function loadAllPLYFiles()
  * Callback when file data is loaded (called for previews and final data)
  */
 function handleFileLoaded(filename, geometry, metadata) {
-    const { isPreview, totalExpectedPoints, wasDownsampled } = metadata;
+    const { isPreview, totalExpectedPoints, wasDownsampled, isIdleUpdate } = metadata;
     
     const fileData = loadedFiles.get(filename);
     if (!fileData) {
@@ -638,44 +690,108 @@ function handleFileLoaded(filename, geometry, metadata) {
         geometry.setAttribute('color', new THREE.Float32BufferAttribute(defaultColors, 3));
     }
 
-    // Store colors
-    const originalColors = geometry.attributes.color.array.slice();
-    const codedColors = createCodedColors(geometry);
-
-    // Update file data
-    loadedFiles.set(filename, {
-        ...fileData,
-        geometry: geometry,
-        originalColors: originalColors,
-        codedColors: codedColors,
-        isPreview: isPreview,
-        loading: isPreview,
-        wasDownsampled: wasDownsampled
-    });
-
-    // Apply current color mode
-    applyColorMode(geometry, filename);
+    // For incremental updates, update geometry in-place to avoid recreating objects
+    const isIncrementalUpdate = isPreview && fileData.geometry && fileData.object;
     
-    // Render the file
-    updateFileRender(filename);
+    if (isIncrementalUpdate && isIdleUpdate) {
+        // Update existing geometry in-place (non-blocking)
+        updateGeometryInPlace(fileData.geometry, geometry);
+        
+        // Update metadata
+        fileData.isPreview = isPreview;
+        fileData.loading = isPreview;
+        fileData.wasDownsampled = wasDownsampled;
+        
+        // Update checkboxes (lightweight)
+        createFileCheckboxes();
+    } else {
+        // First load or final load - do full update
+        
+        // Store colors
+        const originalColors = geometry.attributes.color.array.slice();
+        const codedColors = createCodedColors(geometry);
 
-    // Update UI
-    createFileCheckboxes();
-    updateObjectLabelsUI();
+        // Keep track of old object to remove it after new one is added
+        const oldObject = fileData.object;
 
-    const pointCount = geometry.attributes.position.count.toLocaleString();
-    const status = isPreview ? `Preview (${pointCount} points)` : `Complete (${pointCount} points)`;
-    console.log(`[${filename}] ${status}${wasDownsampled ? ' - downsampled' : ''}`);
+        // Update file data
+        loadedFiles.set(filename, {
+            ...fileData,
+            geometry: geometry,
+            originalColors: originalColors,
+            codedColors: codedColors,
+            isPreview: isPreview,
+            loading: isPreview,
+            wasDownsampled: wasDownsampled
+        });
 
-    // If this was the selected file and we upgraded it, reattach transform controls
-    if (!isPreview && selectedFile === filename) {
-        const upgradedData = loadedFiles.get(filename);
-        if (upgradedData && upgradedData.object) {
-            transformControl.attach(upgradedData.object);
-            transformControl.enabled = true;
-            transformControl.visible = true;
-            updateInfoIconPosition();
+        // Apply current color mode
+        applyColorMode(geometry, filename);
+        
+        // Render the new file (this creates new object)
+        updateFileRender(filename);
+        
+        // Remove old object after new one is added (seamless transition)
+        if (oldObject && oldObject !== loadedFiles.get(filename).object) {
+            scene.remove(oldObject);
+            if (oldObject.geometry) {
+                oldObject.geometry.dispose();
+            }
+            if (oldObject.material) {
+                oldObject.material.dispose();
+            }
         }
+
+        // Update UI
+        createFileCheckboxes();
+        updateObjectLabelsUI();
+
+        const pointCount = geometry.attributes.position.count.toLocaleString();
+        const status = isPreview ? `Preview (${pointCount} points)` : `Complete (${pointCount} points)`;
+        console.log(`[${filename}] ${status}${wasDownsampled ? ' - downsampled' : ''}`);
+
+        // If this was the selected file and we upgraded it, reattach transform controls
+        if (!isPreview && selectedFile === filename) {
+            const upgradedData = loadedFiles.get(filename);
+            if (upgradedData && upgradedData.object) {
+                transformControl.attach(upgradedData.object);
+                transformControl.enabled = true;
+                transformControl.visible = true;
+                updateInfoIconPosition();
+            }
+        }
+    }
+}
+
+/**
+ * Update geometry attributes in-place without recreating the object
+ */
+function updateGeometryInPlace(targetGeometry, sourceGeometry) {
+    // Update position attribute
+    if (sourceGeometry.attributes.position) {
+        targetGeometry.setAttribute('position', sourceGeometry.attributes.position);
+    }
+    
+    // Update color attribute
+    if (sourceGeometry.attributes.color) {
+        targetGeometry.setAttribute('color', sourceGeometry.attributes.color);
+    }
+    
+    // Update normal attribute
+    if (sourceGeometry.attributes.normal) {
+        targetGeometry.setAttribute('normal', sourceGeometry.attributes.normal);
+    }
+    
+    // Update bounding box
+    targetGeometry.computeBoundingBox();
+    
+    // Mark as needing update
+    targetGeometry.attributes.position.needsUpdate = true;
+    if (targetGeometry.attributes.color) {
+        targetGeometry.attributes.color.needsUpdate = true;
+    }
+    if (targetGeometry.attributes.normal) {
+        targetGeometry.attributes.normal.needsUpdate = true;
     }
 }
 

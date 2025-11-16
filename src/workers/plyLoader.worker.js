@@ -9,12 +9,12 @@ import * as THREE from 'three';
 const GRID_SIZE = 0.015;
 const DOWNSAMPLE_THRESHOLD = 500000; // Start downsampling earlier
 const USE_AVERAGING = true;
-const CHUNK_SIZE = 100000; // Process and send data in chunks
+const CHUNK_SIZE = 50000; // Smaller chunks for smoother loading (was 100000)
 
 /**
  * Parse PLY file incrementally and send chunks back to main thread
  */
-async function loadAndProcessPLY(url, filename, centerOffset) {
+async function loadAndProcessPLY(url, filename, centerOffset, qualityMode = 'downsampled') {
     try {
         const response = await fetch(url);
         if (!response.ok) {
@@ -51,8 +51,8 @@ async function loadAndProcessPLY(url, filename, centerOffset) {
             geometry.setAttribute('color', new THREE.Float32BufferAttribute(defaultColors, 3));
         }
 
-        // Decide whether to downsample
-        const needsDownsampling = geometry.attributes.position.count > DOWNSAMPLE_THRESHOLD;
+        // Decide whether to downsample based on quality mode
+        const needsDownsampling = qualityMode === 'downsampled' && geometry.attributes.position.count > DOWNSAMPLE_THRESHOLD;
 
         if (needsDownsampling) {
             // Downsample and send in chunks
@@ -481,9 +481,9 @@ function createDefaultColors(count) {
  * Worker message handler
  */
 self.onmessage = function(e) {
-    const { type, url, filename, centerOffset } = e.data;
+    const { type, url, filename, centerOffset, qualityMode } = e.data;
 
     if (type === 'load') {
-        loadAndProcessPLY(url, filename, centerOffset);
+        loadAndProcessPLY(url, filename, centerOffset, qualityMode);
     }
 };

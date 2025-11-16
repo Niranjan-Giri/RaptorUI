@@ -15,6 +15,16 @@ export class LoaderManager {
         this.maxWorkers = navigator.hardwareConcurrency || 4;
         this.activeLoads = new Map(); // filename -> {geometry chunks, worker}
         this.loadQueue = [];
+        this.pendingUpdates = new Map(); // Throttle updates per file
+        this.updateInterval = 500; // Minimum ms between updates
+        this.qualityMode = 'downsampled'; // 'downsampled' or 'original'
+    }
+
+    /**
+     * Set quality mode for loading
+     */
+    setQualityMode(mode) {
+        this.qualityMode = mode;
     }
 
     /**
@@ -84,7 +94,8 @@ export class LoaderManager {
             type: 'load',
             url: filepath,
             filename,
-            centerOffset: null
+            centerOffset: null,
+            qualityMode: this.qualityMode
         });
 
         this.workers.push(worker);
@@ -169,6 +180,9 @@ export class LoaderManager {
                     wasDownsampled
                 });
             }
+            
+            // Mark the last update time
+            this.pendingUpdates.set(filename, Date.now());
         }
 
         // Report progress
@@ -181,19 +195,41 @@ export class LoaderManager {
             );
         }
 
-        // If we have multiple chunks but not complete, send incremental updates
-        if (!isFirst && !isLast && loadState.chunks.length % 3 === 0) {
-            // Every 3 chunks, update the geometry
+        // Throttled incremental updates - only update if enough time has passed
+        if (!isFirst && !isLast) {
+            const lastUpdate = this.pendingUpdates.get(filename) || 0;
+            const now = Date.now();
+            
+            if (now - lastUpdate >= this.updateInterval) {
+                // Schedule update during idle time to avoid blocking interactions
+                this.scheduleIdleUpdate(filename, loadState, totalPoints, wasDownsampled);
+                this.pendingUpdates.set(filename, now);
+            }
+        }
+    }
+
+    /**
+     * Schedule geometry update during browser idle time
+     */
+    scheduleIdleUpdate(filename, loadState, totalPoints, wasDownsampled) {
+        // Use requestIdleCallback if available, otherwise setTimeout
+        const scheduleFunc = window.requestIdleCallback || ((cb) => setTimeout(cb, 16));
+        
+        scheduleFunc(() => {
+            // Check if load is still active
+            if (!this.activeLoads.has(filename)) return;
+            
             const incrementalGeometry = this.createGeometryFromChunks(loadState.chunks);
             
             if (this.onFileLoaded) {
                 this.onFileLoaded(filename, incrementalGeometry, {
                     isPreview: true,
                     totalExpectedPoints: totalPoints,
-                    wasDownsampled
+                    wasDownsampled,
+                    isIdleUpdate: true // Flag to indicate this is a background update
                 });
             }
-        }
+        }, { timeout: 100 });
     }
 
     /**
@@ -294,6 +330,7 @@ export class LoaderManager {
         loadState.chunks = [];
         
         this.activeLoads.delete(filename);
+        this.pendingUpdates.delete(filename);
     }
 
     /**
