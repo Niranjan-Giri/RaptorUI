@@ -243,6 +243,34 @@ body
     transform: translateY(0);
 }
 
+.query-send-btn:disabled 
+{
+    background: #9E9E9E;
+    cursor: not-allowed;
+}
+
+.query-send-btn:disabled:hover 
+{
+    transform: none;
+    box-shadow: none;
+}
+
+/* Loading spinner */
+.spinner 
+{
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin 
+{
+    to { transform: rotate(360deg); }
+}
+
 
 #object-labels-section label 
 {

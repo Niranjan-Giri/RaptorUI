@@ -1,0 +1,8 @@
+flask==3.0.0
+flask-cors==4.0.0
+vanna==0.5.5
+pandas==2.1.4
+# Database drivers (install based on your needs)
+# psycopg2-binary==2.9.9  # For PostgreSQL
+# pymysql==1.1.0          # For MySQL
+# For SQLite, no additional driver needed (built into Python)

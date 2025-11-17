@@ -499,7 +499,7 @@ function resetView()
     controls.update();
 }
 
-function handleQuerySend() {
+async function handleQuerySend() {
     const queryInput = document.getElementById('query-input');
     const query = queryInput.value.trim();
     
@@ -510,11 +510,230 @@ function handleQuerySend() {
     
     console.log('Query submitted:', query);
     
-    // TODO: Connect to backend LLM here
-    // For now, just log the query
+    // Show loading indicator
+    const querySendBtn = document.getElementById('query-send-btn');
+    const originalBtnHTML = querySendBtn.innerHTML;
+    querySendBtn.innerHTML = '<div class="spinner"></div>';
+    querySendBtn.disabled = true;
     
-    // Clear input after sending
-    queryInput.value = '';
+    try {
+        // Send query to Vanna backend
+        const response = await fetch('http://localhost:5000/api/query', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ question: query })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            console.log('Generated SQL:', data.sql);
+            
+            // Display results in a modal or console
+            displayQueryResults(data);
+            
+            // Optionally execute the query to get results
+            // await executeGeneratedSQL(data.sql);
+        } else {
+            console.error('Error generating SQL:', data.error);
+            alert(`Error: ${data.error}`);
+        }
+        
+    } catch (error) {
+        console.error('Failed to connect to backend:', error);
+        alert('Failed to connect to backend. Make sure the Python server is running on port 5000.');
+    } finally {
+        // Restore button state
+        querySendBtn.innerHTML = originalBtnHTML;
+        querySendBtn.disabled = false;
+        
+        // Clear input after sending
+        queryInput.value = '';
+    }
+}
+
+async function executeGeneratedSQL(sql) {
+    try {
+        const response = await fetch('http://localhost:5000/api/execute', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ sql: sql })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            console.log('Query Results:', data.results);
+            console.log('Columns:', data.columns);
+            console.log('Row Count:', data.row_count);
+            
+            // Display results in UI
+            displayQueryResults({
+                ...data,
+                question: 'Query executed successfully'
+            });
+        } else {
+            console.error('Error executing SQL:', data.error);
+            alert(`Error executing query: ${data.error}`);
+        }
+        
+    } catch (error) {
+        console.error('Failed to execute query:', error);
+        alert('Failed to execute query.');
+    }
+}
+
+function displayQueryResults(data) {
+    // Create or update results modal
+    let modal = document.getElementById('query-results-modal');
+    
+    if (!modal) {
+        modal = createQueryResultsModal();
+    }
+    
+    const contentDiv = document.getElementById('query-results-content');
+    
+    let html = `
+        <h3 style="color: #4CAF50; margin-top: 0;">Query Results</h3>
+        <div style="margin-bottom: 15px;">
+            <strong style="color: #2196F3;">Question:</strong>
+            <p style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 5px; margin: 5px 0;">
+                ${data.question}
+            </p>
+        </div>
+    `;
+    
+    if (data.sql) {
+        html += `
+            <div style="margin-bottom: 15px;">
+                <strong style="color: #2196F3;">Generated SQL:</strong>
+                <pre style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 5px; overflow-x: auto; margin: 5px 0;">
+                    <code style="color: #a9dc76;">${escapeHtml(data.sql)}</code>
+                </pre>
+                <button id="copy-sql-btn" style="margin-top: 5px; padding: 5px 10px; background: #2196F3; border: none; border-radius: 4px; color: white; cursor: pointer;">
+                    Copy SQL
+                </button>
+            </div>
+        `;
+    }
+    
+    if (data.results && data.results.length > 0) {
+        html += `
+            <div style="margin-bottom: 15px;">
+                <strong style="color: #2196F3;">Results (${data.row_count} rows):</strong>
+                <div style="overflow-x: auto; margin-top: 10px;">
+                    <table style="width: 100%; border-collapse: collapse; background: rgba(255,255,255,0.05);">
+                        <thead>
+                            <tr style="background: rgba(76, 175, 80, 0.3);">
+                                ${data.columns.map(col => `<th style="padding: 10px; text-align: left; border: 1px solid rgba(255,255,255,0.1);">${col}</th>`).join('')}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.results.slice(0, 100).map(row => `
+                                <tr>
+                                    ${data.columns.map(col => `<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.1);">${row[col] ?? ''}</td>`).join('')}
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                    ${data.results.length > 100 ? '<p style="margin-top: 10px; color: #ffa500;">Showing first 100 rows of ' + data.results.length + '</p>' : ''}
+                </div>
+            </div>
+        `;
+    }
+    
+    contentDiv.innerHTML = html;
+    modal.style.display = 'flex';
+    
+    // Add copy SQL functionality
+    const copyBtn = document.getElementById('copy-sql-btn');
+    if (copyBtn && data.sql) {
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(data.sql).then(() => {
+                copyBtn.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyBtn.textContent = 'Copy SQL';
+                }, 2000);
+            });
+        });
+    }
+}
+
+function createQueryResultsModal() {
+    const modal = document.createElement('div');
+    modal.id = 'query-results-modal';
+    modal.style.position = 'fixed';
+    modal.style.top = '0';
+    modal.style.left = '0';
+    modal.style.width = '100%';
+    modal.style.height = '100%';
+    modal.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+    modal.style.display = 'none';
+    modal.style.justifyContent = 'center';
+    modal.style.alignItems = 'center';
+    modal.style.zIndex = '10000';
+    modal.style.backdropFilter = 'blur(5px)';
+    
+    const modalContent = document.createElement('div');
+    modalContent.style.backgroundColor = '#2a2a2a';
+    modalContent.style.padding = '30px';
+    modalContent.style.borderRadius = '12px';
+    modalContent.style.maxWidth = '900px';
+    modalContent.style.width = '90%';
+    modalContent.style.maxHeight = '80vh';
+    modalContent.style.overflow = 'auto';
+    modalContent.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.5)';
+    modalContent.style.border = '1px solid rgba(255, 255, 255, 0.1)';
+    
+    const closeBtn = document.createElement('span');
+    closeBtn.innerHTML = '&times;';
+    closeBtn.style.float = 'right';
+    closeBtn.style.fontSize = '32px';
+    closeBtn.style.fontWeight = 'bold';
+    closeBtn.style.color = '#aaa';
+    closeBtn.style.cursor = 'pointer';
+    closeBtn.style.lineHeight = '20px';
+    closeBtn.style.transition = 'color 0.2s';
+    
+    closeBtn.addEventListener('mouseenter', () => {
+        closeBtn.style.color = '#fff';
+    });
+    
+    closeBtn.addEventListener('mouseleave', () => {
+        closeBtn.style.color = '#aaa';
+    });
+    
+    closeBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+    });
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.id = 'query-results-content';
+    contentDiv.style.color = '#fff';
+    contentDiv.style.marginTop = '20px';
+    
+    modalContent.appendChild(closeBtn);
+    modalContent.appendChild(contentDiv);
+    modal.appendChild(modalContent);
+    
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            modal.style.display = 'none';
+        }
+    });
+    
+    document.body.appendChild(modal);
+    return modal;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 function onCanvasClick(event) 
