@@ -1,8 +1,44 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from pathlib import Path
+import os
 import config as con
+from ply_processor import auto_generate_info_json
+
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend requests
+
+# Configuration
+PUBLIC_DIR = Path(__file__).parent.parent / 'public'
+INFO_JSON_PATH = PUBLIC_DIR / 'info.json'
+
+# Auto-generate info.json on startup if it doesn't exist or if PLY files changed
+def initialize_scene_info():
+    """Generate info.json from PLY files on server startup"""
+    print("\n" + "="*60)
+    print("Initializing Scene Info...")
+    print("="*60)
+    
+    if not PUBLIC_DIR.exists():
+        print(f"Warning: Public directory not found: {PUBLIC_DIR}")
+        return
+    
+    # Check if info.json exists
+    if INFO_JSON_PATH.exists():
+        print(f"✓ info.json already exists at {INFO_JSON_PATH}")
+        print("  To regenerate, delete the file or call /api/regenerate-info")
+    else:
+        print(f"✗ info.json not found, generating from PLY files...")
+        success = auto_generate_info_json(str(PUBLIC_DIR), str(INFO_JSON_PATH))
+        if success:
+            print("✓ info.json generated successfully!")
+        else:
+            print("✗ Failed to generate info.json (no PLY files found?)")
+    
+    print("="*60 + "\n")
+
+# Initialize on startup
+initialize_scene_info()
 
 
 # Vanna removed. This backend now focuses on local preprocessing only.
@@ -147,6 +183,121 @@ def health_check():
         'status': 'healthy',
         'service': 'Local Info JSON Query Service'
     })
+
+
+@app.route('/api/regenerate-info', methods=['POST'])
+def regenerate_info():
+    """
+    Force regenerate info.json from current PLY files
+    """
+    try:
+        print("\n[API] Regenerating info.json...")
+        
+        # Remove existing info.json if present
+        if INFO_JSON_PATH.exists():
+            INFO_JSON_PATH.unlink()
+            print(f"[API] Removed existing {INFO_JSON_PATH}")
+        
+        # Generate new info.json
+        success = auto_generate_info_json(str(PUBLIC_DIR), str(INFO_JSON_PATH))
+        
+        if success:
+            # Read and return the generated info
+            with open(INFO_JSON_PATH, 'r') as f:
+                import json
+                info = json.load(f)
+            
+            return jsonify({
+                'success': True,
+                'message': 'info.json regenerated successfully',
+                'info': info,
+                'file_count': len(info.get('name', {}))
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to generate info.json. Are there PLY files in the public directory?'
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/scene-info', methods=['GET'])
+def get_scene_info():
+    """
+    Get current scene info (generates if missing)
+    """
+    try:
+        # Check if info.json exists
+        if not INFO_JSON_PATH.exists():
+            print("[API] info.json not found, generating...")
+            success = auto_generate_info_json(str(PUBLIC_DIR), str(INFO_JSON_PATH))
+            if not success:
+                return jsonify({
+                    'success': False,
+                    'error': 'No PLY files found in public directory'
+                }), 404
+        
+        # Read and return info.json
+        with open(INFO_JSON_PATH, 'r') as f:
+            import json
+            info = json.load(f)
+        
+        return jsonify({
+            'success': True,
+            'info': info,
+            'auto_generated': True,  # Mark as backend-generated
+            'file_count': len(info.get('name', {}))
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/ply-files', methods=['GET'])
+def list_ply_files():
+    """
+    List all PLY files in the public directory
+    """
+    try:
+        ply_files = []
+        
+        if PUBLIC_DIR.exists():
+            for file in PUBLIC_DIR.glob('*.ply'):
+                if file.is_file():
+                    ply_files.append({
+                        'filename': file.name,
+                        'size': file.stat().st_size,
+                        'path': f'/{file.name}'
+                    })
+            
+            # Also check uppercase
+            for file in PUBLIC_DIR.glob('*.PLY'):
+                if file.is_file():
+                    ply_files.append({
+                        'filename': file.name,
+                        'size': file.stat().st_size,
+                        'path': f'/{file.name}'
+                    })
+        
+        return jsonify({
+            'success': True,
+            'files': sorted(ply_files, key=lambda x: x['filename']),
+            'count': len(ply_files)
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 if __name__ == '__main__':
