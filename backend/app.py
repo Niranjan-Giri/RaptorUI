@@ -1,14 +1,93 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import vanna
-from vanna.remote import VannaDefault
-from config import VANNA_API_KEY, VANNA_MODEL
-
+import config as con
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend requests
 
-# Initialize Vanna
-vn = VannaDefault(model=VANNA_MODEL, api_key=VANNA_API_KEY)
+
+# Vanna removed. This backend now focuses on local preprocessing only.
+
+# Simple in-memory cache for query -> result
+query_cache = {}
+
+def normalize_question(q):
+    return q.strip().lower()
+
+def preprocess_query_with_scene(question, scene):
+    """
+    Try to answer common scene-based questions without invoking Vanna.
+    Scene is a list of objects with filename and bounding box metadata.
+    Returns a dict response if handled, or None if not handled.
+    """
+    if not scene or not isinstance(scene, list):
+        return None
+
+    q = normalize_question(question)
+
+    # Check for "how many <object>s" or "count <object>s"
+    import re
+    m = re.search(r"how many (?:of )?(\w+)s?\b|count (?:the )?(\w+)s?\b", q)
+    if m:
+        object_name = (m.group(1) or m.group(2)).lower()
+        count = sum(1 for f in scene if object_name in f.get('filename', '').lower())
+        return {
+            'success': True,
+            'question': question,
+            'sql': None,
+            'results': [{'object': object_name, 'count': count}],
+            'columns': ['object', 'count'],
+            'row_count': 1
+        }
+
+    # "is there a <object>"
+    m = re.search(r"is there (?:a|an|the) (\w+)", q)
+    if m:
+        object_name = m.group(1).lower()
+        exists = any(object_name in f.get('filename', '').lower() for f in scene)
+        return {
+            'success': True,
+            'question': question,
+            'sql': None,
+            'results': [{'object': object_name, 'exists': exists}],
+            'columns': ['object', 'exists'],
+            'row_count': 1
+        }
+
+    # "where is the <object>"
+    m = re.search(r"where is (?:a|an|the) (\w+)", q)
+    if m:
+        object_name = m.group(1).lower()
+        for f in scene:
+            if object_name in f.get('filename', '').lower():
+                bbox = f.get('bbox', {})
+                center = bbox.get('center') if bbox else None
+                size = bbox.get('size') if bbox else None
+                return {
+                    'success': True,
+                    'question': question,
+                    'sql': None,
+                    'results': [{ 'object': object_name, 'center': center, 'size': size, 'filename': f.get('filename') }],
+                    'columns': ['object', 'center', 'size', 'filename'],
+                    'row_count': 1
+                }
+
+    # Vertex count: "how many vertices in <object>" or "vertex count of <object>"
+    m = re.search(r"vertex count(?: of)? (?:the )?(\w+)|how many vertices (?:in|for) (\w+)", q)
+    if m:
+        object_name = (m.group(1) or m.group(2) or '').lower()
+        for f in scene:
+            if object_name in f.get('filename', '').lower():
+                vc = f.get('vertex_count')
+                return {
+                    'success': True,
+                    'question': question,
+                    'sql': None,
+                    'results': [{ 'filename': f.get('filename'), 'vertex_count': vc }],
+                    'columns': ['filename', 'vertex_count'],
+                    'row_count': 1
+                }
+
+    return None
 
 @app.route('/api/query', methods=['POST'])
 def generate_query():
@@ -22,20 +101,21 @@ def generate_query():
         if not question:
             return jsonify({'error': 'No question provided'}), 400
         
-        # Generate SQL from natural language
-        sql = vn.generate_sql(question)
-        
-        # Optional: Execute the query if database is connected
-        # df = vn.run_sql(sql)
-        # results = df.to_dict('records')
-        
-        return jsonify({
-            'success': True,
-            'question': question,
-            'sql': sql,
-            # 'results': results,  # Uncomment if executing queries
-            # 'columns': list(df.columns) if not df.empty else []
-        })
+        # Check cache first
+        nq = normalize_question(question)
+        if nq in query_cache:
+            return jsonify(query_cache[nq])
+
+        # If scene metadata supplied, try preprocessing to answer quickly
+        scene = data.get('scene')
+        pre = preprocess_query_with_scene(question, scene)
+        if pre is not None:
+            # Cache and return
+            query_cache[nq] = pre
+            return jsonify(pre)
+
+        # We do not use Vanna to generate SQL; return not-handled or fall back to the preprocessing result
+        return jsonify({ 'success': False, 'error': 'Query not supported for server-side rich generation in this build. Use local info.json-only queries.' }), 400
         
     except Exception as e:
         return jsonify({
@@ -45,67 +125,17 @@ def generate_query():
 
 
 @app.route('/api/execute', methods=['POST'])
-def execute_query():
-    """
-    Endpoint to execute a SQL query and return results
-    """
-    try:
-        data = request.get_json()
-        sql = data.get('sql', '')
-        
-        if not sql:
-            return jsonify({'error': 'No SQL provided'}), 400
-        
-        # Execute the query
-        df = vn.run_sql(sql)
-        
-        return jsonify({
-            'success': True,
-            'sql': sql,
-            'results': df.to_dict('records'),
-            'columns': list(df.columns) if not df.empty else [],
-            'row_count': len(df)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+def execute_query_not_supported():
+    return jsonify({'success': False, 'error': 'Server-side SQL execution removed. This install uses only JSON mapping.'}), 400
 
 
 @app.route('/api/train', methods=['POST'])
-def train_vanna():
+def train_vanna_not_supported():
     """
     Endpoint to train Vanna with DDL, documentation, or SQL examples
     """
-    try:
-        data = request.get_json()
-        train_type = data.get('type', '')  # 'ddl', 'documentation', or 'sql'
-        content = data.get('content', '')
-        
-        if not train_type or not content:
-            return jsonify({'error': 'Missing type or content'}), 400
-        
-        if train_type == 'ddl':
-            vn.train(ddl=content)
-        elif train_type == 'documentation':
-            vn.train(documentation=content)
-        elif train_type == 'sql':
-            vn.train(sql=content)
-        else:
-            return jsonify({'error': 'Invalid train type'}), 400
-        
-        return jsonify({
-            'success': True,
-            'message': f'Successfully trained with {train_type}'
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+    # Training via Vanna is no longer supported in this build
+    return jsonify({'success': False, 'error':'Vanna training is disabled for this build'}), 400
 
 
 @app.route('/api/health', methods=['GET'])
@@ -115,7 +145,7 @@ def health_check():
     """
     return jsonify({
         'status': 'healthy',
-        'service': 'Vanna SQL Generator'
+        'service': 'Local Info JSON Query Service'
     })
 
 

@@ -1,3 +1,4 @@
 node_modules/
 public/*.ply
-backend/config.py
+
+.env

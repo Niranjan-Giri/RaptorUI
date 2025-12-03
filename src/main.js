@@ -1,354 +1,167 @@
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import { LoaderManager } from './loaderManager.js';
+// Deprecated entrypoint; the refactored app entry is in src/app.entry.js
+console.warn('Note: src/main.js is deprecated. The app now uses src/app.entry.js');
 
-let scene, camera, renderer, controls, transformControl;
-let currentMode = 'orbit';
-let raycaster, mouse;
+/**
+ * Load the scene info JSON which maps object labels to filenames and bounding box metadata.
+ */
+async function loadSceneInfo() {
+    try {
+        const resp = await fetch('/info.json');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const json = await resp.json();
+        sceneInfo = json;
+        // Build a map for faster search: map normalized tokens to object keys
+        sceneInfo._map = new Map();
+        sceneInfo.displayNames = new Map(); // map filename -> array of friendly labels
+        if (json.name) {
+            for (const key of Object.keys(json.name)) {
+                const val = json.name[key];
+                const filenameLower = String(val).toLowerCase();
+                const keyLower = String(key).toLowerCase();
+                sceneInfo._map.set(keyLower, { key, filename: val });
+                sceneInfo._map.set(filenameLower, { key, filename: val });
+                // Also store filename without extension for matching searches that omit .ply
+                const basename = filenameLower.replace(/\.ply$/i, '');
+                sceneInfo._map.set(basename, { key, filename: val });
 
-// Web Worker loader manager
-let loaderManager;
-
-// Changed to support multiple files
-let loadedFiles = new Map(); // Store in the format filename: { geometry, object, visible, originalColors, codedColors, filepath }
-let renderMode = 'points';
-let colorMode = 'original'; // 'original' or 'coded'
-let qualityMode = 'downsampled'; // 'downsampled' or 'original'
-let ambientLight = null;
-let directionalLight = null;
-let selectedFile = null;
-//This will be for the information of the selected objects
-let infoIcon = null; 
-
-const plyFiles = [
-    '/B3_S4.ply',
-    '/B3_S2.ply',
-    '/B3_S5.ply',
-];
-
-// Initialize loader manager
-loaderManager = new LoaderManager(
-    handleFileLoaded,
-    handleFileProgress,
-    handleFileError
-);
-
-init();
-loadAllPLYFiles();
-setupMenuControls();
-createFileCheckboxes();
-createInfoIcon();
-createInfoModal();
-
-function init() 
-{
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x202020);
-
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 0, 2);
-
-    renderer = new THREE.WebGLRenderer
-    ({ 
-        antialias: true, 
-        alpha: true, 
-        powerPreference: "high-performance"
-    });
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
-    renderer.shadowMap.enabled = true;                    
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;   
-    renderer.setPixelRatio(window.devicePixelRatio);     
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
-
-    controls = new OrbitControls(camera, renderer.domElement);
-    
-    // Initialize TransformControls
-    transformControl = new TransformControls(camera, renderer.domElement);
-    transformControl.setMode('translate'); // Default to translate mode
-    transformControl.addEventListener('dragging-changed', function (event) {
-        // Disable orbit controls while dragging
-        controls.enabled = !event.value;
-    });
-    scene.add(transformControl);
-
-    raycaster = new THREE.Raycaster();
-    raycaster.params.Points.threshold = 0.01;
-    mouse = new THREE.Vector2();
-
-    window.addEventListener('resize', onWindowResize);
-    renderer.domElement.addEventListener('click', onCanvasClick);
-    
-    // Keyboard shortcuts for transform controls
-    window.addEventListener('keydown', onKeyDown);
-    
-    // Update info icon position on render
-    renderer.domElement.addEventListener('mousemove', updateInfoIconPosition);
-
-    // Start render loop immediately so previews can appear as soon as they are ready
-    animate();
-}
-
-function createInfoIcon() {
-    infoIcon = document.createElement('div');
-    infoIcon.id = 'info-icon';
-    infoIcon.innerHTML = '&#9432;';
-    infoIcon.style.position = 'absolute';
-    infoIcon.style.width = '24px';
-    infoIcon.style.height = '24px';
-    infoIcon.style.borderRadius = '50%';
-    infoIcon.style.backgroundColor = 'rgba(33, 150, 243, 0.9)';
-    infoIcon.style.color = 'white';
-    infoIcon.style.display = 'none';
-    infoIcon.style.justifyContent = 'center';
-    infoIcon.style.alignItems = 'center';
-    infoIcon.style.cursor = 'pointer';
-    infoIcon.style.fontWeight = 'bold';
-    infoIcon.style.fontSize = '16px';
-    infoIcon.style.fontFamily = 'Arial, sans-serif';
-    infoIcon.style.border = '2px solid white';
-    infoIcon.style.zIndex = '1000';
-    infoIcon.style.pointerEvents = 'auto';
-    infoIcon.style.transition = 'all 0.2s ease';
-    
-    infoIcon.addEventListener('mouseenter', () => {
-        infoIcon.style.transform = 'scale(1.1)';
-        infoIcon.style.backgroundColor = 'rgba(33, 150, 243, 1)';
-    });
-    
-    infoIcon.addEventListener('mouseleave', () => {
-        infoIcon.style.transform = 'scale(1)';
-        infoIcon.style.backgroundColor = 'rgba(33, 150, 243, 0.9)';
-    });
-    
-    infoIcon.addEventListener('click', (e) => {
-        e.stopPropagation();
-        showInfoModal();
-    });
-    
-    document.body.appendChild(infoIcon);
-}
-
-function createInfoModal() {
-    const modal = document.createElement('div');
-    modal.id = 'info-modal';
-    modal.style.position = 'fixed';
-    modal.style.top = '0';
-    modal.style.left = '0';
-    modal.style.width = '100%';
-    modal.style.height = '100%';
-    modal.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-    modal.style.display = 'none';
-    modal.style.justifyContent = 'center';
-    modal.style.alignItems = 'center';
-    modal.style.zIndex = '10000';
-    modal.style.backdropFilter = 'blur(5px)';
-    
-    const modalContent = document.createElement('div');
-    modalContent.style.backgroundColor = '#2a2a2a';
-    modalContent.style.padding = '30px';
-    modalContent.style.borderRadius = '12px';
-    modalContent.style.maxWidth = '500px';
-    modalContent.style.width = '90%';
-    modalContent.style.maxHeight = '80vh';
-    modalContent.style.overflow = 'auto';
-    modalContent.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.5)';
-    modalContent.style.border = '1px solid rgba(255, 255, 255, 0.1)';
-    
-    const closeBtn = document.createElement('span');
-    closeBtn.innerHTML = '&times;';
-    closeBtn.style.float = 'right';
-    closeBtn.style.fontSize = '32px';
-    closeBtn.style.fontWeight = 'bold';
-    closeBtn.style.color = '#aaa';
-    closeBtn.style.cursor = 'pointer';
-    closeBtn.style.lineHeight = '20px';
-    closeBtn.style.transition = 'color 0.2s';
-    
-    closeBtn.addEventListener('mouseenter', () => {
-        closeBtn.style.color = '#fff';
-    });
-    
-    closeBtn.addEventListener('mouseleave', () => {
-        closeBtn.style.color = '#aaa';
-    });
-    
-    closeBtn.addEventListener('click', () => {
-        modal.style.display = 'none';
-    });
-    
-    const contentDiv = document.createElement('div');
-    contentDiv.id = 'modal-content-info';
-    contentDiv.style.color = '#fff';
-    contentDiv.style.marginTop = '20px';
-    
-    modalContent.appendChild(closeBtn);
-    modalContent.appendChild(contentDiv);
-    modal.appendChild(modalContent);
-
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-            modal.style.display = 'none';
+                // Tokenize filename and key words into map for fuzzy matching
+                const tokens = new Set([...basename.split(/[^a-z0-9]+/), ...keyLower.split(/[^a-z0-9]+/)]);
+                for (const t of tokens) {
+                    if (t && t.length > 0) {
+                        sceneInfo._map.set(t, { key, filename: val });
+                    }
+                }
+                // Track the display names (we store primary label if available as key or filename)
+                const existing = sceneInfo.displayNames.get(val) || [];
+                if (!existing.includes(key)) existing.push(key);
+                sceneInfo.displayNames.set(val, existing);
+            }
         }
-    });
-    
-    document.body.appendChild(modal);
+        // Also map bounding_box keys
+        if (json.bounding_box) {
+            for (const key of Object.keys(json.bounding_box)) {
+                sceneInfo._map.set(key.toLowerCase(), { key, filename: json.name?.[key] });
+            }
+        }
+        // If labels/aliases are defined explicitly, map them too
+        if (json.labels) {
+            for (const [fn, labels] of Object.entries(json.labels)) {
+                const filenameLower = String(fn).toLowerCase();
+                for (const lab of labels) {
+                    const labLower = String(lab).toLowerCase();
+                    sceneInfo._map.set(labLower, { key: Object.keys(json.name).find(k => json.name[k] === fn) || labLower, filename: fn });
+                }
+                // store display names
+                const existing = sceneInfo.displayNames.get(fn) || [];
+                for (const lab of labels) if (!existing.includes(lab)) existing.push(lab);
+                sceneInfo.displayNames.set(fn, existing);
+            }
+        }
+
+        console.log('[Main] Scene info.json loaded', sceneInfo);
+        if (sceneInfo.displayNames) {
+            for (const [fn, labs] of sceneInfo.displayNames.entries()) {
+                console.log(`[Main] displayNames: ${fn} -> ${labs.join(', ')}`);
+            }
+        }
+    } catch (err) {
+        console.warn('[Main] Could not load info.json (not present or failed to parse). Will generate from loaded PLY files.', err);
+        sceneInfo = { name: {}, bounding_box: {}, labels: {}, _map: new Map(), displayNames: new Map() };
+    }
 }
 
-function showInfoModal() {
-    if (!selectedFile) return;
-    
-    const fileData = loadedFiles.get(selectedFile);
-    if (!fileData) return;
-    
-    const modal = document.getElementById('info-modal');
-    const contentDiv = document.getElementById('modal-content-info');
-    
-    // Get object information
+/**
+ * Ensure an entry for a loaded file exists in `sceneInfo`; add bounding box and basic labels if missing.
+ */
+function ensureSceneInfoForFile(filename) {
+    if (!sceneInfo) sceneInfo = { name: {}, bounding_box: {}, labels: {}, _map: new Map(), displayNames: new Map() };
+    const fileData = loadedFiles.get(filename);
+    if (!fileData || !fileData.geometry) return;
+
+    // If there's already a mapping for this filename, don't overwrite
+    const existingEntryKey = Object.keys(sceneInfo.name || {}).find(k => String(sceneInfo.name[k]).toLowerCase() === filename.toLowerCase());
+    if (!existingEntryKey) {
+        // Use basename without extension as key
+        const basename = filename.replace(/\.ply$/i, '');
+        let key = basename;
+        // If key already used, add numeric suffix
+        let suffix = 1;
+        while (sceneInfo.name && sceneInfo.name[key]) {
+            key = `${basename}_${suffix++}`;
+        }
+        sceneInfo.name = sceneInfo.name || {};
+        sceneInfo.name[key] = filename;
+    }
+
+    // Compute bounding box for geometry
     const geometry = fileData.geometry;
-    const object = fileData.object;
-    
-    const vertexCount = geometry.attributes.position.count;
-    const position = object.position;
-    const rotation = object.rotation;
-    const scale = object.scale;
-    
-    // Calculate bounding box info
     geometry.computeBoundingBox();
     const bbox = geometry.boundingBox;
     const size = new THREE.Vector3();
     bbox.getSize(size);
-    
-    // Build HTML content
-    let html = `
-        <h2 style="margin-top: 0; color: #4CAF50; border-bottom: 2px solid #4CAF50; padding-bottom: 10px;">
-            Object Information
-        </h2>
-        <div style="line-height: 1.8;">
-            <p><strong style="color: #2196F3;">File Name:</strong> ${selectedFile}</p>
-            <p><strong style="color: #2196F3;">File Path:</strong> ${fileData.filepath}</p>
-            <p><strong style="color: #2196F3;">Render Mode:</strong> ${renderMode === 'points' ? 'Point Cloud' : '3D Mesh'}</p>
-            <hr style="border: none; border-top: 1px solid rgba(255, 255, 255, 0.1); margin: 15px 0;">
-            
-            <h3 style="color: #FF9800; margin-bottom: 10px;">Geometry</h3>
-            <p><strong>Vertex Count:</strong> ${vertexCount.toLocaleString()}</p>
-            <p><strong>Bounding Box Size:</strong></p>
-            <ul style="margin-left: 20px;">
-                <li>Width (X): ${size.x.toFixed(4)}</li>
-                <li>Height (Y): ${size.y.toFixed(4)}</li>
-                <li>Depth (Z): ${size.z.toFixed(4)}</li>
-            </ul>
-            
-            <hr style="border: none; border-top: 1px solid rgba(255, 255, 255, 0.1); margin: 15px 0;">
-            
-            <h3 style="color: #FF9800; margin-bottom: 10px;">Transform</h3>
-            <p><strong>Position:</strong></p>
-            <ul style="margin-left: 20px;">
-                <li>X: ${position.x.toFixed(4)}</li>
-                <li>Y: ${position.y.toFixed(4)}</li>
-                <li>Z: ${position.z.toFixed(4)}</li>
-            </ul>
-            
-            <p><strong>Rotation (radians):</strong></p>
-            <ul style="margin-left: 20px;">
-                <li>X: ${rotation.x.toFixed(4)}</li>
-                <li>Y: ${rotation.y.toFixed(4)}</li>
-                <li>Z: ${rotation.z.toFixed(4)}</li>
-            </ul>
-            
-            <p><strong>Scale:</strong></p>
-            <ul style="margin-left: 20px;">
-                <li>X: ${scale.x.toFixed(4)}</li>
-                <li>Y: ${scale.y.toFixed(4)}</li>
-                <li>Z: ${scale.z.toFixed(4)}</li>
-            </ul>
-        </div>
-    `;
-    
-    contentDiv.innerHTML = html;
-    modal.style.display = 'flex';
-}
+    const centerLocal = new THREE.Vector3();
+    bbox.getCenter(centerLocal);
 
-function updateInfoIconPosition() {
-    if (!selectedFile || !infoIcon) return;
-    
-    const fileData = loadedFiles.get(selectedFile);
-    if (!fileData || !fileData.object || !fileData.visible) {
-        infoIcon.style.display = 'none';
-        return;
+    // Convert center to world coordinates using associated object if available
+    let centerWorld = centerLocal.toArray();
+    if (fileData.object) {
+        const cw = centerLocal.clone();
+        fileData.object.localToWorld(cw);
+        centerWorld = cw.toArray();
     }
-    
-    // Get the object's bounding box in world space
-    const geometry = fileData.geometry;
-    geometry.computeBoundingBox();
-    const bbox = geometry.boundingBox;
-    
-    // I am placing the info icon a little bit in the right of the selected object
-    const cornerPosition = new THREE.Vector3(
-        bbox.max.x,
-        bbox.max.y,
-        bbox.max.z
-    );
-    
-    // Apply the object's world transform to the corner
-    fileData.object.localToWorld(cornerPosition);
-    
-    // Project to screen space
-    const screenPosition = cornerPosition.clone().project(camera);
-    
-    // Convert to pixel coordinates
-    const x = (screenPosition.x * 0.5 + 0.5) * window.innerWidth;
-    const y = (screenPosition.y * -0.5 + 0.5) * window.innerHeight;
-    
-    // Check if object is in front of camera
-    if (screenPosition.z < 1) {
-        infoIcon.style.display = 'flex';
-        infoIcon.style.left = `${x + 10}px`;
-        infoIcon.style.top = `${y - 10}px`;
-    } else {
-        infoIcon.style.display = 'none';
+
+    sceneInfo.bounding_box = sceneInfo.bounding_box || {};
+    const keyForFile = Object.keys(sceneInfo.name).find(k => sceneInfo.name[k] === filename);
+    // Only set bounding box if not already present (don't override explicit info.json)
+    if (!sceneInfo.bounding_box[keyForFile]) {
+        sceneInfo.bounding_box[keyForFile] = { x: size.x, y: size.y, z: size.z, center: centerWorld };
     }
-}
 
-function setupMenuControls() 
-{
-    // Mode buttons
-    document.getElementById('btn-orbit').addEventListener('click', () => setMode('orbit'));
-    document.getElementById('btn-pan').addEventListener('click', () => setMode('pan'));
-    document.getElementById('btn-select').addEventListener('click', () => setMode('select'));
-    
-    // Zoom buttons
-    document.getElementById('btn-zoom-in').addEventListener('click', zoomIn);
-    document.getElementById('btn-zoom-out').addEventListener('click', zoomOut);
-    document.getElementById('btn-reset').addEventListener('click', resetView);
+    // Default label: basename
+    sceneInfo.labels = sceneInfo.labels || {};
+    sceneInfo.labels[filename] = sceneInfo.labels[filename] || [filename.replace(/\.ply$/i, '')];
 
-    // Render mode buttons
-    document.getElementById('btn-point-cloud').addEventListener('click', () => setRenderMode('points'));
-    document.getElementById('btn-3d-mesh').addEventListener('click', () => setRenderMode('mesh'));
-    
-    // Quality mode buttons
-    document.getElementById('btn-downsampled').addEventListener('click', () => setQualityMode('downsampled'));
-    document.getElementById('btn-original-quality').addEventListener('click', () => setQualityMode('original'));
-    
-    // Color mode buttons
-    document.getElementById('btn-original-color').addEventListener('click', () => setColorMode('original'));
-    document.getElementById('btn-coded-color').addEventListener('click', () => setColorMode('coded'));
-    
-    // Query input and send button
-    const queryInput = document.getElementById('query-input');
-    const querySendBtn = document.getElementById('query-send-btn');
-    
-    querySendBtn.addEventListener('click', handleQuerySend);
-    
-    // Allow Enter key to send query
-    queryInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            handleQuerySend();
+    // Update _map and displayNames
+    sceneInfo._map = sceneInfo._map || new Map();
+    const basenameLower = filename.replace(/\.ply$/i, '').toLowerCase();
+    sceneInfo._map.set(basenameLower, { key: Object.keys(sceneInfo.name).find(k => sceneInfo.name[k] === filename), filename });
+    if (sceneInfo.labels[filename]) {
+        for (const lab of sceneInfo.labels[filename]) {
+            const labLower = String(lab).toLowerCase();
+            sceneInfo._map.set(labLower, { key: Object.keys(sceneInfo.name).find(k => sceneInfo.name[k] === filename), filename });
         }
-    });
+        sceneInfo.displayNames = sceneInfo.displayNames || new Map();
+        sceneInfo.displayNames.set(filename, sceneInfo.labels[filename]);
+    }
+
+    console.log('[Main] Generated sceneInfo entry for', filename, sceneInfo.name, sceneInfo.bounding_box[Object.keys(sceneInfo.name).find(k => sceneInfo.name[k] === filename)]);
+}
+
+/**
+ * Export the generated or combined sceneInfo as a downloadable JSON file.
+ */
+function exportSceneInfo() {
+    // Build minimal scene info object
+    const out = { name: {}, bounding_box: {}, labels: {} };
+    if (sceneInfo && sceneInfo.name) out.name = { ...sceneInfo.name };
+    if (sceneInfo && sceneInfo.bounding_box) {
+        // Copy bounding_box but exclude internal center object (keep size values)
+        for (const [k, v] of Object.entries(sceneInfo.bounding_box)) {
+            out.bounding_box[k] = { x: v.x, y: v.y, z: v.z };
+        }
+    }
+    if (sceneInfo && sceneInfo.labels) out.labels = { ...sceneInfo.labels };
+
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'scene-info.generated.json';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
 }
 
 function setMode(mode) 
@@ -517,33 +330,53 @@ async function handleQuerySend() {
     querySendBtn.disabled = true;
     
     try {
-        // Send query to Vanna backend
-        const response = await fetch('http://localhost:5000/api/query', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ question: query })
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            console.log('Generated SQL:', data.sql);
-            
-            // Display results in a modal or console
-            displayQueryResults(data);
-            
-            // Optionally execute the query to get results
-            // await executeGeneratedSQL(data.sql);
+        // Use only local info.json mapping for all queries
+        const localResponse = localQueryHandler(query);
+        if (localResponse && localResponse.handled) {
+            // If local query returns location info, highlight the object and animate camera; do not show modal.
+            const first = localResponse.data.results && localResponse.data.results[0];
+            if (first && (first.center || first.size || first.filename)) {
+                // If filename present and geometry loaded, prefer geometry bbox
+                let filename = first.filename;
+                if (filename) {
+                    const f = Array.from(loadedFiles.entries()).find(([name, fd]) => name.toLowerCase() === String(filename).toLowerCase() || fd.filepath.toLowerCase().endsWith(String(filename).toLowerCase()));
+                    if (f) {
+                        const [name, fd] = f;
+                        if (fd.geometry) {
+                            fd.geometry.computeBoundingBox();
+                            const center = fd.geometry.boundingBox.getCenter(new THREE.Vector3()).toArray();
+                            const size = fd.geometry.boundingBox.getSize(new THREE.Vector3()).toArray();
+                            createHighlightBox({ name, filename: name, center, size });
+                        } else {
+                            createHighlightBox({ name: filename, filename, center: first.center || [0,0,0], size: first.size || [1,1,1] });
+                        }
+                    } else {
+                        // geometry isn't loaded, use info.json bbox
+                        createHighlightBox({ name: filename, filename, center: first.center || [0,0,0], size: first.size || [1,1,1] });
+                    }
+                } else {
+                    // No filename, use provided center/size if any
+                    createHighlightBox({ name: first.object, filename: first.object, center: first.center || [0,0,0], size: first.size || [1,1,1] });
+                }
+            } else if (first && first.exists !== undefined) {
+                // Existence or count result: show a small inline message in the query area instead of modal
+                const existsMsg = first.exists ? `Yes, ${first.object} is present.` : `No, ${first.object} is not present.`;
+                showInlineQueryMessage(existsMsg, first.exists ? 'success' : 'error');
+            } else if (localResponse.data && localResponse.data.results && localResponse.data.results.length > 0) {
+                // Generic results (like counts)
+                const row = localResponse.data.results[0];
+                const keys = Object.keys(row || {});
+                if (keys.length > 0) {
+                    const msg = keys.map(k => `${k}: ${row[k]}`).join(', ');
+                    showInlineQueryMessage(msg, 'info');
+                }
+            } else {
+                // Nothing found
+                showInlineQueryMessage('No results found.', 'error');
+            }
         } else {
-            console.error('Error generating SQL:', data.error);
-            alert(`Error: ${data.error}`);
+            showInlineQueryMessage('No results found.', 'error');
         }
-        
-    } catch (error) {
-        console.error('Failed to connect to backend:', error);
-        alert('Failed to connect to backend. Make sure the Python server is running on port 5000.');
     } finally {
         // Restore button state
         querySendBtn.innerHTML = originalBtnHTML;
@@ -551,41 +384,181 @@ async function handleQuerySend() {
         
         // Clear input after sending
         queryInput.value = '';
+        // No server signature to clear
     }
 }
 
-async function executeGeneratedSQL(sql) {
-    try {
-        const response = await fetch('http://localhost:5000/api/execute', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ sql: sql })
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            console.log('Query Results:', data.results);
-            console.log('Columns:', data.columns);
-            console.log('Row Count:', data.row_count);
-            
-            // Display results in UI
-            displayQueryResults({
-                ...data,
-                question: 'Query executed successfully'
-            });
-        } else {
-            console.error('Error executing SQL:', data.error);
-            alert(`Error executing query: ${data.error}`);
-        }
-        
-    } catch (error) {
-        console.error('Failed to execute query:', error);
-        alert('Failed to execute query.');
-    }
+// In-memory frontend cache to avoid requesting backend repeatedly for the same question
+const queryCache = new Map();
+
+function normalizeQuestion(q) {
+    return q.trim().toLowerCase();
 }
+
+function getSceneMetadata() {
+    const files = [];
+    loadedFiles.forEach((fileData, filename) => {
+        if (!fileData.geometry) return;
+        const geometry = fileData.geometry;
+        geometry.computeBoundingBox();
+        const bbox = geometry.boundingBox;
+        const center = new THREE.Vector3();
+        bbox.getCenter(center);
+        files.push({
+            filename,
+            visible: !!fileData.visible,
+            vertex_count: geometry.attributes.position.count,
+            bbox: {
+                min: bbox.min.toArray(),
+                max: bbox.max.toArray(),
+                size: bbox.getSize(new THREE.Vector3()).toArray(),
+                center: center.toArray()
+            }
+        });
+    });
+    return files;
+}
+
+function localQueryHandler(question) {
+    const q = normalizeQuestion(question);
+
+    // Fast path: use frontend cache
+    if (queryCache.has(q)) {
+        return { handled: true, data: queryCache.get(q) };
+    }
+
+    // Get scene metadata
+    const sceneFiles = getSceneMetadata();
+    const filenamesLower = sceneFiles.map(f => f.filename.toLowerCase());
+
+    const responseData = { success: true, question, sql: null, results: [], columns: [], row_count: 0 };
+
+    // 1. Count objects: e.g., "how many chairs"
+    let match = q.match(/how many (?:of )?([\w\s-]+)s?\b/);
+    if (!match) match = q.match(/count (?:the )?(\w+)s?\b/);
+    if (match) {
+        let object = match[1];
+        // Normalize token: trim and remove common trailing s for plural forms
+        object = object.trim().toLowerCase();
+        if (object.endsWith('s')) object = object.slice(0, -1);
+        const count = filenamesLower.filter(f => f.includes(object)).length;
+        responseData.results = [{ object, count }];
+        responseData.columns = ['object', 'count'];
+        responseData.row_count = 1;
+        queryCache.set(q, responseData);
+        return { handled: true, data: responseData };
+    }
+
+    // 2. Is there an object: e.g., "is there a chair"
+    match = q.match(/is there (?:a|an|the )?([\w\s-]+)/);
+    if (match) {
+        let object = match[1];
+        object = object.trim().toLowerCase();
+        if (object.endsWith('s')) object = object.slice(0, -1);
+        // Prefer explicit info.json names if available
+        let exists = filenamesLower.some(f => f.includes(object));
+        if (sceneInfo && sceneInfo._map) {
+            // match tokens and basenames too
+            const lower = object.toLowerCase();
+            const entry = sceneInfo._map.get(lower);
+            exists = Boolean(entry) || sceneFiles.some(f => f.filename.toLowerCase().includes(lower));
+            // If we have an entry for the label, include the filename in the response
+            if (entry) {
+                responseData.results = [{ object, exists: true, filename: entry.filename }];
+                responseData.columns = ['object', 'exists', 'filename'];
+                responseData.row_count = 1;
+                queryCache.set(q, responseData);
+                return { handled: true, data: responseData };
+            }
+        }
+        responseData.results = [{ object, exists }];
+        responseData.columns = ['object', 'exists'];
+        responseData.row_count = 1;
+        queryCache.set(q, responseData);
+        return { handled: true, data: responseData };
+    }
+
+    // 3. Where is object e.g., "where is the chair"
+    match = q.match(/where is (?:a|an|the )?([\w\s-]+)/);
+    if (match) {
+        let object = match[1];
+        object = object.trim().toLowerCase();
+        if (object.endsWith('s')) object = object.slice(0, -1);
+        // If info.json is present, treat it as authoritative for "where is" queries
+        if (sceneInfo && sceneInfo._map) {
+            const lower = object.toLowerCase();
+            let entry = sceneInfo._map.get(lower);
+            if (!entry) {
+                // try tokens and substrings
+                for (const [k, v] of sceneInfo._map.entries()) {
+                    if (k.includes(lower) || lower.includes(k)) {
+                        entry = v; break;
+                    }
+                }
+            }
+            if (entry) {
+                // try to compute center/size from loaded geometry if available
+                let center = [0,0,0];
+                let size = [1,1,1];
+                if (entry.filename) {
+                    const f = sceneFiles.find(ff => ff.filename.toLowerCase().includes(String(entry.filename).toLowerCase()));
+                    if (f) {
+                        center = f.bbox.center;
+                        size = f.bbox.size;
+                    }
+                }
+                // Otherwise, read size from the info json bounding_box if present
+                const bboxInfo = sceneInfo.bounding_box && sceneInfo.bounding_box[entry.key];
+                if (bboxInfo) {
+                    size = [bboxInfo.x || size[0], bboxInfo.y || size[1], bboxInfo.z || size[2]];
+                }
+                responseData.results = [{ object: entry.key, center, size, filename: entry.filename }];
+                responseData.columns = ['object', 'center', 'size'];
+                responseData.row_count = 1;
+                queryCache.set(q, responseData);
+                return { handled: true, data: responseData };
+            } else {
+                // Info.json is authoritative and the object wasn't found
+                responseData.results = [{ object, exists: false }];
+                responseData.columns = ['object', 'exists'];
+                responseData.row_count = 1;
+                queryCache.set(q, responseData);
+                return { handled: true, data: responseData };
+            }
+        } else {
+            // Fallback to previous behavior when info.json is not present
+            let file = sceneFiles.find(f => f.filename.toLowerCase().includes(object));
+            if (file) {
+                responseData.results = [{ object, center: file.bbox.center, size: file.bbox.size, filename: file.filename }];
+                responseData.columns = ['object', 'center', 'size'];
+                responseData.row_count = 1;
+                queryCache.set(q, responseData);
+                return { handled: true, data: responseData };
+            }
+        }
+        // Not found locally - don't claim handled, fall back to backend
+    }
+
+    // 4. Vertex count of a file
+    match = q.match(/vertex count (?:of )?(?:the )?([\w\s-]+)|how many vertices (?:in|for) ([\w\s-]+)/);
+    if (match) {
+        const object = (match[1] || match[2] || '').trim().toLowerCase();
+        const file = sceneFiles.find(f => f.filename.toLowerCase().includes(object));
+        if (file) {
+            responseData.results = [{ object: file.filename, vertex_count: file.vertex_count }];
+            responseData.columns = ['object', 'vertex_count'];
+            responseData.row_count = 1;
+            queryCache.set(q, responseData);
+            return { handled: true, data: responseData };
+        }
+    }
+
+    // Not handled locally
+    return { handled: false };
+}
+
+// The app does not use server-side SQL execution anymore;
+// This function removed as we now only use local info.json mapping.
 
 function displayQueryResults(data) {
     // Create or update results modal
@@ -597,8 +570,14 @@ function displayQueryResults(data) {
     
     const contentDiv = document.getElementById('query-results-content');
     
+    const source = data.source || 'local';
+    console.log(`[Query] Displaying results from: ${source}`);
     let html = `
-        <h3 style="color: #4CAF50; margin-top: 0;">Query Results</h3>
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+            <h3 style="color: #4CAF50; margin-top: 0;">Query Results</h3>
+            <div class="query-source-badge" style="font-size: 12px; color: #fff; padding: 6px 8px; border-radius: 8px; margin-left: 8px; background: rgba(255, 193, 7, 0.12); border: 1px solid rgba(255,193,7,0.2)">Local Preview</div>
+        </div>
+        
         <div style="margin-bottom: 15px;">
             <strong style="color: #2196F3;">Question:</strong>
             <p style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 5px; margin: 5px 0;">
@@ -607,19 +586,7 @@ function displayQueryResults(data) {
         </div>
     `;
     
-    if (data.sql) {
-        html += `
-            <div style="margin-bottom: 15px;">
-                <strong style="color: #2196F3;">Generated SQL:</strong>
-                <pre style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 5px; overflow-x: auto; margin: 5px 0;">
-                    <code style="color: #a9dc76;">${escapeHtml(data.sql)}</code>
-                </pre>
-                <button id="copy-sql-btn" style="margin-top: 5px; padding: 5px 10px; background: #2196F3; border: none; border-radius: 4px; color: white; cursor: pointer;">
-                    Copy SQL
-                </button>
-            </div>
-        `;
-    }
+    // The app is local-only, there's no SQL generation displayed.
     
     if (data.results && data.results.length > 0) {
         html += `
@@ -649,18 +616,156 @@ function displayQueryResults(data) {
     contentDiv.innerHTML = html;
     modal.style.display = 'flex';
     
-    // Add copy SQL functionality
-    const copyBtn = document.getElementById('copy-sql-btn');
-    if (copyBtn && data.sql) {
-        copyBtn.addEventListener('click', () => {
-            navigator.clipboard.writeText(data.sql).then(() => {
-                copyBtn.textContent = 'Copied!';
-                setTimeout(() => {
-                    copyBtn.textContent = 'Copy SQL';
-                }, 2000);
-            });
-        });
+    // No SQL copy functionality used in local-only mode.
+
+    // If the query provides a bounding box/center/size, highlight it
+    if (data.results && data.results.length > 0) {
+        const first = data.results[0];
+        // If response says object exists: highlight its bounding box
+        if (first.center && first.size) {
+            const name = first.object || first.filename || Object.keys(sceneInfo?.name || {})[0];
+            createHighlightBox({ name, filename: first.filename, center: first.center, size: first.size });
+        } else if (first.exists !== undefined) {
+            if (!first.exists) {
+                // Clear any existing highlights
+                clearHighlights();
+                // Add a small 'not found' message to the modal
+                const notFoundDiv = document.createElement('div');
+                notFoundDiv.style.background = 'rgba(255, 0, 0, 0.12)';
+                notFoundDiv.style.borderLeft = '4px solid #f44336';
+                notFoundDiv.style.padding = '10px';
+                notFoundDiv.style.borderRadius = '4px';
+                notFoundDiv.style.marginTop = '10px';
+                notFoundDiv.textContent = `Object '${first.object}' not found in scene (as per info.json).`;
+                contentDiv.appendChild(notFoundDiv);
+            } else {
+                // Found: if filename specified, try to highlight it
+                if (first.filename) {
+                    // If the geometry is loaded, use the true bounding box center/size
+                    const f = Array.from(loadedFiles.entries()).find(([name, fd]) => name.toLowerCase() === String(first.filename).toLowerCase() || fd.filepath.toLowerCase().endsWith(String(first.filename).toLowerCase()));
+                    if (f) {
+                        const [name, fd] = f;
+                        if (fd.geometry) {
+                            fd.geometry.computeBoundingBox();
+                            const center = fd.geometry.boundingBox.getCenter(new THREE.Vector3()).toArray();
+                            const size = fd.geometry.boundingBox.getSize(new THREE.Vector3()).toArray();
+                            createHighlightBox({ name, filename: name, center, size });
+                        } else {
+                            // Not loaded geometry - fall back to info.json bounding box
+                            const bboxInfo = sceneInfo?.bounding_box?.[Object.keys(sceneInfo.name).find(k => sceneInfo.name[k] === first.filename)];
+                            if (bboxInfo) {
+                                const center = [0, 0, 0];
+                                const size = [bboxInfo.x || 1, bboxInfo.y || 1, bboxInfo.z || 1];
+                                createHighlightBox({ name: first.filename, filename: first.filename, center, size });
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+/**
+ * Create and display a translucent green highlight box around an object.
+ * If file geometry is available we center the box on its mesh; otherwise use center data if provided.
+ */
+function clearHighlights() {
+    highlightBoxes.forEach((mesh, name) => {
+        scene.remove(mesh);
+        if (mesh.geometry) mesh.geometry.dispose();
+        if (mesh.material) mesh.material.dispose();
+    });
+    highlightBoxes.clear();
+    // No labels to remove (3D label system disabled)
+}
+
+function createHighlightBox({ name, filename, center = [0,0,0], size = [1,1,1] }) {
+    // Remove any current highlight(s) to focus on the new one
+    clearHighlights();
+
+    const boxSize = new THREE.Vector3(size[0] || 1, size[1] || 1, size[2] || 1);
+    const geometry = new THREE.BoxGeometry(boxSize.x, boxSize.y, boxSize.z);
+    const material = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.12, depthTest: false });
+    const boxMesh = new THREE.Mesh(geometry, material);
+    const centerVec = new THREE.Vector3(center[0] || 0, center[1] || 0, center[2] || 0);
+
+    // If a loaded file exists for this filename, use its object to convert center to world space
+    if (filename) {
+        const fileEntry = Array.from(loadedFiles.values()).find(f => f.filepath && (f.filepath.endsWith(filename) || f.filepath.includes(filename)));
+        if (fileEntry && fileEntry.object) {
+            // Compute bounding box center in local coordinates and convert to world
+            fileEntry.geometry.computeBoundingBox();
+            const bb = fileEntry.geometry.boundingBox;
+            const localCenter = new THREE.Vector3();
+            bb.getCenter(localCenter);
+            fileEntry.object.localToWorld(localCenter);
+            boxMesh.position.copy(localCenter);
+        } else {
+            boxMesh.position.copy(centerVec);
+        }
+    } else {
+        boxMesh.position.copy(centerVec);
+    }
+
+    // Add a colored outline using EdgesGeometry
+    const edges = new THREE.EdgesGeometry(geometry);
+    const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2 }));
+    line.position.copy(boxMesh.position);
+
+    scene.add(boxMesh);
+    scene.add(line);
+    const key = name || filename || 'highlight';
+    highlightBoxes.set(key, boxMesh);
+    highlightBoxes.set(key + ':outline', line);
+
+    // Optionally, move camera target to center to focus on it
+    // Smoothly animate camera to focus on the box
+    animateCameraTo(boxMesh.position, { size: boxSize }, 700);
+}
+
+// 3D label functionality removed - keeping highlight-only experience
+
+function animateCameraTo(targetCenter, options = {}, duration = 700) {
+    if (!camera) return;
+    if (cameraAnim) {
+        // cancel existing animation
+        cancelAnimationFrame(cameraAnim.raf);
+    }
+
+    const startPos = camera.position.clone();
+    const startTarget = controls.target.clone();
+    const endTarget = targetCenter.clone();
+
+    // compute a desired distance based on bounding box size and camera FOV
+    const size = options.size || new THREE.Vector3(1,1,1);
+    const maxSize = Math.max(size.x, size.y, size.z);
+    const fov = (camera.fov * Math.PI) / 180.0; // in radians
+    // ensure some minimum distance factor
+    const distance = Math.max(1.0, maxSize * 1.8 / Math.tan(fov / 2));
+
+    // direction from center to camera
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    const endPos = endTarget.clone().add(dir.multiplyScalar(distance));
+
+    const startTime = performance.now();
+    function tick(now) {
+        const t = Math.min(1, (now - startTime) / duration);
+        // smoothstep easing
+        const s = t * t * (3 - 2 * t);
+        camera.position.lerpVectors(startPos, endPos, s);
+        controls.target.lerpVectors(startTarget, endTarget, s);
+        controls.update();
+        // label orientation is handled in updateFrameDependentUI
+
+        if (t < 1) {
+            cameraAnim.raf = requestAnimationFrame(tick);
+        } else {
+            cameraAnim = null;
+        }
+    }
+
+    cameraAnim = { raf: requestAnimationFrame(tick) };
 }
 
 function createQueryResultsModal() {
@@ -793,6 +898,14 @@ function onCanvasClick(event)
                 
                 // Update UI to show selection
                 updateObjectLabelsUI();
+                // Create highlight box for selected object
+                const fd = loadedFiles.get(filename);
+                if (fd && fd.geometry) {
+                    fd.geometry.computeBoundingBox();
+                    const center = fd.geometry.boundingBox.getCenter(new THREE.Vector3()).toArray();
+                    const size = fd.geometry.boundingBox.getSize(new THREE.Vector3()).toArray();
+                    createHighlightBox({ name: filename, filename: filename, center, size });
+                }
                 break;
             }
         }
@@ -923,6 +1036,8 @@ function handleFileLoaded(filename, geometry, metadata) {
         
         // Update checkboxes (lightweight)
         createFileCheckboxes();
+        // Ensure sceneInfo gets updated for previewed geometry too
+        ensureSceneInfoForFile(filename);
     } else {
         // First load or final load - do full update
         
@@ -979,6 +1094,8 @@ function handleFileLoaded(filename, geometry, metadata) {
                 updateInfoIconPosition();
             }
         }
+        // Generate/ensure sceneInfo entry for this file if info.json wasn't present
+        ensureSceneInfoForFile(filename);
     }
 }
 
@@ -1181,7 +1298,27 @@ function createFileCheckboxes() {
             statusText = ' (downsampled)';
         }
         
-        nameSpan.textContent = filename + statusText;
+        // Add friendly label(s) from sceneInfo if available
+        let displayName = filename;
+        if (sceneInfo && sceneInfo.displayNames && sceneInfo.displayNames.has(filename)) {
+            const labs = sceneInfo.displayNames.get(filename);
+            if (labs && labs.length > 0) {
+                // If there is a human-friendly name, show it before filename
+                displayName = `${labs.join(', ')} (${filename})`;
+            }
+        }
+        nameSpan.textContent = displayName + statusText;
+        nameSpan.style.cursor = 'pointer';
+        nameSpan.title = 'Click to highlight this object';
+        nameSpan.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const fd = loadedFiles.get(filename);
+            if (!fd || !fd.geometry) return;
+            fd.geometry.computeBoundingBox();
+            const center = fd.geometry.boundingBox.getCenter(new THREE.Vector3()).toArray();
+            const size = fd.geometry.boundingBox.getSize(new THREE.Vector3()).toArray();
+            createHighlightBox({ name: filename, filename: filename, center, size });
+        });
 
         topRow.appendChild(checkbox);
         topRow.appendChild(nameSpan);
@@ -1218,6 +1355,27 @@ function createFileCheckboxes() {
 
         contentDiv.appendChild(label);
     });
+
+    // Add export button for generated scene JSON (only once)
+    let exportBtn = document.getElementById('export-scene-json-btn');
+    if (!exportBtn) {
+        exportBtn = document.createElement('button');
+        exportBtn.id = 'export-scene-json-btn';
+        exportBtn.addEventListener('click', exportSceneInfo);
+    }
+    exportBtn.textContent = 'Export Scene JSON';
+    exportBtn.style.marginTop = '10px';
+    exportBtn.style.padding = '6px 10px';
+    exportBtn.style.fontSize = '12px';
+    exportBtn.style.borderRadius = '6px';
+    exportBtn.style.border = '1px solid rgba(255,255,255,0.08)';
+    exportBtn.style.background = '#333';
+    exportBtn.style.cursor = 'pointer';
+    exportBtn.addEventListener('click', exportSceneInfo);
+    // Remove existing and add button at end
+    const existing = contentDiv.querySelector('#export-scene-json-btn');
+    if (existing) existing.remove();
+    contentDiv.appendChild(exportBtn);
 }
 
 function toggleFileVisibility(filename, visible) {
@@ -1238,6 +1396,8 @@ function toggleFileVisibility(filename, visible) {
         if (selectedFile === filename) {
             deselectFile();
         }
+        // Clear any highlights that reference this file
+        clearHighlights();
     }
 }
 
@@ -1265,6 +1425,9 @@ function deselectFile() {
     if (infoIcon) {
         infoIcon.style.display = 'none';
     }
+
+    // Clear any highlights when deselecting
+    clearHighlights();
     
     updateObjectLabelsUI();
 }
@@ -1337,4 +1500,6 @@ function animate()
     if (selectedFile) {
         updateInfoIconPosition();
     }
+    // Update highlight label positions/frame dependent UI
+    updateFrameDependentUI();
 }
