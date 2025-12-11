@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { LoaderManager } from './loaderManager.js';
+import { InstanceManager } from './instanceManager.js';
 
 export function createSceneManager(app, ui) {
     // app is a shared state object
@@ -31,6 +32,15 @@ export function createSceneManager(app, ui) {
     app.transformControl.addEventListener('dragging-changed', function (event) {
         // Disable orbit controls while dragging
         app.controls.enabled = !event.value;
+        // Invalidate bbox cache when object is transformed
+        if (!event.value && app.selectedFile) {
+            const fileData = app.loadedFiles.get(app.selectedFile);
+            if (fileData) fileData._cachedBBox = null;
+        }
+    });
+    app.transformControl.addEventListener('objectChange', function () {
+        // Mark that transform is happening for potential optimizations
+        app._isTransforming = true;
     });
     app.scene.add(app.transformControl);
 
@@ -49,6 +59,9 @@ export function createSceneManager(app, ui) {
 
     // Create the LoaderManager and wire callbacks
     app.loaderManager = new LoaderManager(handleFileLoaded, handleFileProgress, handleFileError);
+    
+    // Create InstanceManager for optimizing repeated objects
+    app.instanceManager = new InstanceManager(app.scene);
 
     return {
         init: () => {
@@ -66,7 +79,10 @@ export function createSceneManager(app, ui) {
         applyColorMode: applyColorMode,
         setQualityMode: setQualityMode,
         setRenderMode: setRenderMode,
-        onCanvasClick: onCanvasClick
+        onCanvasClick: onCanvasClick,
+        optimizeInstances: optimizeInstances,
+        toggleInstancing: toggleInstancing,
+        getInstanceStats: getInstanceStats
     };
 
     // ----------------- Implementation ------------------
@@ -100,8 +116,12 @@ export function createSceneManager(app, ui) {
         app.controls.update();
         app.renderer.render(app.scene, app.camera);
 
-        // Update info icon position every frame
-        if (app.selectedFile && ui) ui.updateInfoIconPosition();
+        // Throttle info icon updates - only update every 2 frames (30fps max)
+        if (!app._frameCounter) app._frameCounter = 0;
+        app._frameCounter++;
+        if (app._frameCounter % 2 === 0 && app.selectedFile && ui) {
+            ui.updateInfoIconPosition();
+        }
         // Update highlight label positions/frame dependent UI
         if (ui && ui.updateFrameDependentUI) ui.updateFrameDependentUI();
     }
@@ -261,13 +281,15 @@ export function createSceneManager(app, ui) {
     }
 
     function handleFileLoaded(filename, geometry, metadata) {
-        const { isPreview, totalExpectedPoints, wasDownsampled, isIdleUpdate } = metadata;
+        const { isPreview, totalExpectedPoints, wasDownsampled, isIdleUpdate, isIncremental } = metadata;
         const fileData = app.loadedFiles.get(filename);
         if (!fileData) return;
         ensureGeometryHasNormals(geometry);
         if (!geometry.attributes.color) geometry.setAttribute('color', new THREE.Float32BufferAttribute(createDefaultColors(geometry.attributes.position.count), 3));
+        
+        // Handle incremental updates more efficiently
         const isIncrementalUpdate = isPreview && fileData.geometry && fileData.object;
-        if (isIncrementalUpdate && isIdleUpdate) {
+        if (isIncrementalUpdate && (isIdleUpdate || isIncremental)) {
             updateGeometryInPlace(fileData.geometry, geometry);
             fileData.isPreview = isPreview;
             fileData.loading = isPreview;
@@ -300,6 +322,18 @@ export function createSceneManager(app, ui) {
                 }
             }
             if (ui) ui.ensureSceneInfoForFile(filename);
+            
+            // If this is final load (not preview), optimize instances
+            if (!isPreview) {
+                // Defer instance optimization slightly to avoid blocking
+                setTimeout(() => {
+                    const optimizedCount = optimizeInstances();
+                    if (optimizedCount > 0) {
+                        const stats = getInstanceStats();
+                        console.log(`[InstanceManager] Stats: ${stats.instancedMeshCount} instanced meshes, ${stats.drawCallReduction} draw calls saved`);
+                    }
+                }, 100);
+            }
         }
     }
 
@@ -359,7 +393,7 @@ export function createSceneManager(app, ui) {
                     if (ui) ui.updateObjectLabelsUI();
                     const fd = app.loadedFiles.get(filename);
                     if (fd && fd.geometry) {
-                        fd.geometry.computeBoundingBox();
+                        if (!fd.geometry.boundingBox) fd.geometry.computeBoundingBox();
                         const center = fd.geometry.boundingBox.getCenter(new THREE.Vector3()).toArray();
                         const size = fd.geometry.boundingBox.getSize(new THREE.Vector3()).toArray();
                         createHighlightBox({ name: filename, filename: filename, center, size });
@@ -470,5 +504,24 @@ export function createSceneManager(app, ui) {
             else app.cameraAnim = null;
         }
         app.cameraAnim = { raf: requestAnimationFrame(tick) };
+    }
+    
+    function optimizeInstances() {
+        if (!app.instanceManager) return 0;
+        const count = app.instanceManager.optimizeScene(app.loadedFiles);
+        return count;
+    }
+    
+    function toggleInstancing(enabled) {
+        if (!app.instanceManager) return;
+        app.instanceManager.setEnabled(enabled);
+        if (enabled) {
+            optimizeInstances();
+        }
+    }
+    
+    function getInstanceStats() {
+        if (!app.instanceManager) return null;
+        return app.instanceManager.getStats();
     }
 }

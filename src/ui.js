@@ -242,6 +242,9 @@ export function createUIManager(app, sceneManager, queryHandler) {
         safe('btn-original-quality', () => setQualityMode('original'));
         safe('btn-original-color', () => setColorMode('original'));
         safe('btn-coded-color', () => setColorMode('coded'));
+        safe('btn-instancing-on', () => setInstancingMode(true));
+        safe('btn-instancing-off', () => setInstancingMode(false));
+        safe('btn-optimize-now', () => optimizeInstances());
         const queryInput = document.getElementById('query-input'); const querySendBtn = document.getElementById('query-send-btn'); if (querySendBtn) querySendBtn.addEventListener('click', () => { const qh = queryHandler || app.query; if (qh && qh.handleQuerySend) qh.handleQuerySend(); }); if (queryInput) queryInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { const qh = queryHandler || app.query; if (qh && qh.handleQuerySend) qh.handleQuerySend(); } });
     }
 
@@ -268,6 +271,53 @@ export function createUIManager(app, sceneManager, queryHandler) {
     function setQualityMode(mode) { app.qualityMode = mode; document.getElementById('btn-downsampled')?.classList.toggle('active', mode === 'downsampled'); document.getElementById('btn-original-quality')?.classList.toggle('active', mode === 'original'); app.sceneManager.setQualityMode(mode); }
 
     function setRenderMode(mode) { app.renderMode = mode; document.getElementById('btn-point-cloud')?.classList.toggle('active', mode === 'points'); document.getElementById('btn-3d-mesh')?.classList.toggle('active', mode === 'mesh'); app.sceneManager.setRenderMode(mode); }
+    
+    function setInstancingMode(enabled) {
+        app.instancingEnabled = enabled;
+        document.getElementById('btn-instancing-on')?.classList.toggle('active', enabled);
+        document.getElementById('btn-instancing-off')?.classList.toggle('active', !enabled);
+        
+        if (app.sceneManager && app.sceneManager.toggleInstancing) {
+            app.sceneManager.toggleInstancing(enabled);
+            updateInstanceStats();
+        }
+        
+        const status = enabled ? 'enabled' : 'disabled';
+        console.log(`[Instancing] ${status}`);
+    }
+    
+    function optimizeInstances() {
+        if (app.sceneManager && app.sceneManager.optimizeInstances) {
+            const count = app.sceneManager.optimizeInstances();
+            updateInstanceStats();
+            
+            if (count > 0) {
+                showInlineQueryMessage(`Optimized ${count} objects with instancing`, 'success', 2000);
+            } else {
+                showInlineQueryMessage('No repeated objects found to optimize', 'info', 2000);
+            }
+        }
+    }
+    
+    function updateInstanceStats() {
+        const statsEl = document.getElementById('instance-stats');
+        if (!statsEl) return;
+        
+        if (app.sceneManager && app.sceneManager.getInstanceStats) {
+            const stats = app.sceneManager.getInstanceStats();
+            if (stats && stats.totalInstancedObjects > 0) {
+                statsEl.innerHTML = `
+                    ${stats.instancedMeshCount} instanced meshes<br>
+                    ${stats.totalInstancedObjects} objects<br>
+                    -${stats.drawCallReduction} draw calls
+                `;
+                statsEl.style.color = '#4CAF50';
+            } else {
+                statsEl.innerHTML = 'No instances active';
+                statsEl.style.color = '#888';
+            }
+        }
+    }
 
     function zoomIn() { app.camera.position.multiplyScalar(0.8); app.controls.update(); }
     function zoomOut() { app.camera.position.multiplyScalar(1.2); app.controls.update(); }
@@ -277,7 +327,15 @@ export function createUIManager(app, sceneManager, queryHandler) {
         if (!app.selectedFile || !app.infoIcon) return;
         const fileData = app.loadedFiles.get(app.selectedFile);
         if (!fileData || !fileData.object || !fileData.visible) { app.infoIcon.style.display='none'; return; }
-        const geometry = fileData.geometry; geometry.computeBoundingBox(); const bbox = geometry.boundingBox;
+        
+        // Cache bounding box to avoid recomputation every frame
+        if (!fileData._cachedBBox) {
+            const geometry = fileData.geometry;
+            if (!geometry.boundingBox) geometry.computeBoundingBox();
+            fileData._cachedBBox = geometry.boundingBox.clone();
+        }
+        const bbox = fileData._cachedBBox;
+        
         const cornerPosition = new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.max.z);
         fileData.object.localToWorld(cornerPosition);
         const screenPosition = cornerPosition.clone().project(app.camera);

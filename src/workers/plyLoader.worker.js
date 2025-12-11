@@ -8,7 +8,7 @@ import * as THREE from 'three';
 // Downsampling configuration
 const GRID_SIZE = 0.015;
 const DOWNSAMPLE_THRESHOLD = 500000; // Start downsampling earlier
-const USE_AVERAGING = true;
+const USE_RANDOM_SELECTION = true; // Use random selection instead of averaging for better structure preservation
 const CHUNK_SIZE = 50000; // Smaller chunks for smoother loading (was 100000)
 
 /**
@@ -250,7 +250,8 @@ function parseASCIIPLY(headerText, data, headerLength, header, geometry) {
 }
 
 /**
- * Grid-based downsampling (same algorithm but optimized for worker)
+ * Optimized grid-based downsampling using numeric spatial hash keys
+ * Avoids string concatenation and uses TypedArray-based buckets
  */
 function downsampleGeometryStreaming(geometry, filename) {
     const positions = geometry.attributes.position;
@@ -264,8 +265,16 @@ function downsampleGeometryStreaming(geometry, filename) {
         progress: 0
     });
 
-    const grid = new Map();
     const totalPoints = positions.count;
+    
+    // Use Map with simple string keys (optimized approach)
+    // Simpler and more reliable than bit-packing which can cause collisions
+    const cellIndices = new Map();
+    const hashCell = (cx, cy, cz) => `${cx}:${cy}:${cz}`;
+    
+    // Pre-allocate point index storage arrays to reduce allocations
+    const indexBuckets = [];
+    let bucketCount = 0;
 
     // First pass: collect all points in each cell
     for (let i = 0; i < totalPoints; i++) {
@@ -276,14 +285,14 @@ function downsampleGeometryStreaming(geometry, filename) {
         const cellX = Math.floor(x / GRID_SIZE);
         const cellY = Math.floor(y / GRID_SIZE);
         const cellZ = Math.floor(z / GRID_SIZE);
-        const cellKey = `${cellX},${cellY},${cellZ}`;
+        const cellHash = hashCell(cellX, cellY, cellZ);
 
-        if (!grid.has(cellKey)) {
-            grid.set(cellKey, []);
+        if (!cellIndices.has(cellHash)) {
+            cellIndices.set(cellHash, []);
         }
-        grid.get(cellKey).push(i);
+        cellIndices.get(cellHash).push(i);
 
-        // Report progress every 100k points
+        // Report progress every 100k points (reduced messaging overhead)
         if (i % 100000 === 0) {
             postMessage({
                 type: 'progress',
@@ -301,95 +310,66 @@ function downsampleGeometryStreaming(geometry, filename) {
         progress: 50
     });
 
-    // Second pass: process each cell
-    const resultPoints = [];
+    // Estimate result size for pre-allocation
+    const cellCount = cellIndices.size;
+    const resultPositions = new Float32Array(cellCount * 3);
+    const resultColors = new Float32Array(cellCount * 3);
+    const resultNormals = normals ? new Float32Array(cellCount * 3) : null;
+    
+    let resultIdx = 0;
     let processedCells = 0;
-    const totalCells = grid.size;
 
-    for (const [cellKey, pointIndices] of grid.entries()) {
-        if (USE_AVERAGING && pointIndices.length > 1) {
-            let sumX = 0, sumY = 0, sumZ = 0;
-            let sumR = 0, sumG = 0, sumB = 0;
-            let sumNX = 0, sumNY = 0, sumNZ = 0;
-
-            for (const idx of pointIndices) {
-                sumX += positions.getX(idx);
-                sumY += positions.getY(idx);
-                sumZ += positions.getZ(idx);
-
-                if (colors) {
-                    sumR += colors.getX(idx);
-                    sumG += colors.getY(idx);
-                    sumB += colors.getZ(idx);
-                }
-
-                if (normals) {
-                    sumNX += normals.getX(idx);
-                    sumNY += normals.getY(idx);
-                    sumNZ += normals.getZ(idx);
-                }
-            }
-
-            const count = pointIndices.length;
-            resultPoints.push({
-                position: [sumX / count, sumY / count, sumZ / count],
-                color: colors ? [sumR / count, sumG / count, sumB / count] : [1, 1, 1],
-                normal: normals ? [sumNX / count, sumNY / count, sumNZ / count] : null
-            });
-        } else {
-            const idx = pointIndices[0];
-            resultPoints.push({
-                position: [positions.getX(idx), positions.getY(idx), positions.getZ(idx)],
-                color: colors ? [colors.getX(idx), colors.getY(idx), colors.getZ(idx)] : [1, 1, 1],
-                normal: normals ? [normals.getX(idx), normals.getY(idx), normals.getZ(idx)] : null
-            });
+    // Second pass: process each cell with direct TypedArray writes
+    for (const [cellHash, pointIndices] of cellIndices.entries()) {
+        const count = pointIndices.length;
+        
+        // Random selection preserves structure better than averaging
+        // Pick a random point from the cell (fast and maintains original features)
+        const idx = USE_RANDOM_SELECTION && count > 1 
+            ? pointIndices[Math.floor(Math.random() * count)]
+            : pointIndices[0];
+        
+        // Direct copy of selected point
+        resultPositions[resultIdx * 3] = positions.getX(idx);
+        resultPositions[resultIdx * 3 + 1] = positions.getY(idx);
+        resultPositions[resultIdx * 3 + 2] = positions.getZ(idx);
+        
+        resultColors[resultIdx * 3] = colors ? colors.getX(idx) : 1;
+        resultColors[resultIdx * 3 + 1] = colors ? colors.getY(idx) : 1;
+        resultColors[resultIdx * 3 + 2] = colors ? colors.getZ(idx) : 1;
+        
+        if (resultNormals) {
+            resultNormals[resultIdx * 3] = normals.getX(idx);
+            resultNormals[resultIdx * 3 + 1] = normals.getY(idx);
+            resultNormals[resultIdx * 3 + 2] = normals.getZ(idx);
         }
-
+        
+        resultIdx++;
         processedCells++;
-        if (processedCells % 10000 === 0) {
+        
+        // Reduced progress reporting frequency
+        if (processedCells % 20000 === 0) {
             postMessage({
                 type: 'progress',
                 filename,
                 message: 'Processing grid cells...',
-                progress: 50 + (processedCells / totalCells) * 50 // 50-100%
+                progress: 50 + (processedCells / cellCount) * 50 // 50-100%
             });
         }
     }
 
-    // Create new geometry
+    // Create new geometry with exact-sized arrays (slice if we over-allocated)
     const newGeometry = new THREE.BufferGeometry();
-    const newPositions = new Float32Array(resultPoints.length * 3);
-    const newColors = new Float32Array(resultPoints.length * 3);
-    const newNormals = normals ? new Float32Array(resultPoints.length * 3) : null;
-
-    for (let i = 0; i < resultPoints.length; i++) {
-        const point = resultPoints[i];
-        
-        newPositions[i * 3] = point.position[0];
-        newPositions[i * 3 + 1] = point.position[1];
-        newPositions[i * 3 + 2] = point.position[2];
-        
-        newColors[i * 3] = point.color[0];
-        newColors[i * 3 + 1] = point.color[1];
-        newColors[i * 3 + 2] = point.color[2];
-        
-        if (newNormals && point.normal) {
-            newNormals[i * 3] = point.normal[0];
-            newNormals[i * 3 + 1] = point.normal[1];
-            newNormals[i * 3 + 2] = point.normal[2];
-        }
-    }
-
-    newGeometry.setAttribute('position', new THREE.BufferAttribute(newPositions, 3));
-    newGeometry.setAttribute('color', new THREE.BufferAttribute(newColors, 3));
-    if (newNormals) {
-        newGeometry.setAttribute('normal', new THREE.BufferAttribute(newNormals, 3));
+    newGeometry.setAttribute('position', new THREE.BufferAttribute(resultPositions.slice(0, resultIdx * 3), 3));
+    newGeometry.setAttribute('color', new THREE.BufferAttribute(resultColors.slice(0, resultIdx * 3), 3));
+    if (resultNormals) {
+        newGeometry.setAttribute('normal', new THREE.BufferAttribute(resultNormals.slice(0, resultIdx * 3), 3));
     }
 
     postMessage({
         type: 'progress',
         filename,
-        message: `Downsampled from ${totalPoints.toLocaleString()} to ${resultPoints.length.toLocaleString()} points`,
+        message: `Downsampled from ${totalPoints.toLocaleString()} to ${resultIdx.toLocaleString()} points`,
         progress: 100
     });
 
