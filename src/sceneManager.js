@@ -86,10 +86,45 @@ export function createSceneManager(app, ui) {
     };
 
     // ----------------- Implementation ------------------
+    
+    /**
+     * Calculate optimal point size for consistent visual density across all screens
+     * Takes into account: viewport size, DPI, camera FOV, and distance to target
+     */
+    function calculatePointSize() {
+        // Base size in world units - this determines the physical size of points in 3D space
+        const baseSize = 0.003;
+        
+        // Account for viewport height to maintain consistent density regardless of window size
+        // Larger viewports need slightly larger points to maintain perceived density
+        const viewportFactor = Math.sqrt(window.innerHeight / 1080);
+        
+        // DPI compensation: Higher DPI screens need larger points to appear the same size
+        // Use sqrt to avoid overcompensation on very high DPI screens
+        const dpiCompensation = Math.sqrt(window.devicePixelRatio);
+        
+        // Camera distance factor: adjust for how close/far the camera typically is
+        const distanceToTarget = app.camera.position.length();
+        const distanceFactor = Math.max(0.5, Math.min(2.0, distanceToTarget / 2.0));
+        
+        return baseSize * viewportFactor * dpiCompensation * distanceFactor;
+    }
     function onWindowResize() {
         app.camera.aspect = window.innerWidth / window.innerHeight;
         app.camera.updateProjectionMatrix();
+        app.renderer.setPixelRatio(window.devicePixelRatio);
         app.renderer.setSize(window.innerWidth, window.innerHeight);
+
+        // Update point sizes for all loaded files to maintain consistent density across screens
+        if (app.renderMode === 'points') {
+            const optimalSize = calculatePointSize();
+            app.loadedFiles.forEach((fileData) => {
+                if (fileData.object && fileData.object.isPoints) {
+                    fileData.object.material.size = optimalSize;
+                    fileData.object.material.needsUpdate = true;
+                }
+            });
+        }
     }
 
     function onKeyDown(event) {
@@ -243,7 +278,8 @@ export function createSceneManager(app, ui) {
         if (!fileData.visible) return;
 
         if (app.renderMode === 'points') {
-            const material = new THREE.PointsMaterial({ size: 0.005, vertexColors: true, color: 0xffffff });
+            const optimalSize = calculatePointSize();
+            const material = new THREE.PointsMaterial({ size: optimalSize, vertexColors: true, color: 0xffffff });
             fileData.object = new THREE.Points(fileData.geometry, material);
             fileData.object.castShadow = true;
             fileData.object.receiveShadow = true;

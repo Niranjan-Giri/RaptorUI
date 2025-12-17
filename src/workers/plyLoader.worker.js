@@ -1,15 +1,45 @@
-/**
- * Web Worker for loading and processing PLY files
- * Handles parsing and downsampling off the main thread
- */
-
 import * as THREE from 'three';
 
 // Downsampling configuration
-const GRID_SIZE = 0.015;
-const DOWNSAMPLE_THRESHOLD = 500000; // Start downsampling earlier
-const USE_RANDOM_SELECTION = true; // Use random selection instead of averaging for better structure preservation
-const CHUNK_SIZE = 50000; // Smaller chunks for smoother loading (was 100000)
+const TARGET_POINTS = 300000; 
+const DOWNSAMPLE_THRESHOLD = 400000;
+const USE_RANDOM_SELECTION = false;
+const CHUNK_SIZE = 50000;
+
+
+const GLOBAL_MIN_BOUNDS = {
+    x: -1000.0,
+    y: -1000.0,
+    z: -1000.0
+};
+
+/**
+ * Calculate optimal grid size based on point cloud bounds
+ * Returns a suggested GRID_SIZE value for target point density
+ * 
+ * @param {THREE.BufferGeometry} geometry - The geometry to analyze
+ * @param {number} targetPoints - Desired number of points after downsampling
+ * @returns {number} Suggested grid size
+ */
+function calculateOptimalGridSize(geometry, targetPoints = TARGET_POINTS) {
+    if (!geometry.boundingBox) {
+        geometry.computeBoundingBox();
+    }
+    const bbox = geometry.boundingBox;
+    const size = new THREE.Vector3();
+    bbox.getSize(size);
+
+    // Handle flat or thin geometries by ensuring non-zero dimensions
+    const dx = Math.max(size.x, 0.001);
+    const dy = Math.max(size.y, 0.001);
+    const dz = Math.max(size.z, 0.001);
+    
+    const volume = dx * dy * dz;
+    
+    // Assuming uniform distribution, voxel size = (volume / target points) ^ (1/3)
+    const gridSize = Math.pow(volume / targetPoints, 1/3);
+    return Math.max(0.001, gridSize); // Minimum 1mm grid size
+}
 
 /**
  * Parse PLY file incrementally and send chunks back to main thread
@@ -55,8 +85,11 @@ async function loadAndProcessPLY(url, filename, centerOffset, qualityMode = 'dow
         const needsDownsampling = qualityMode === 'downsampled' && geometry.attributes.position.count > DOWNSAMPLE_THRESHOLD;
 
         if (needsDownsampling) {
+            // Calculate optimal grid size for this specific geometry
+            const gridSize = calculateOptimalGridSize(geometry, TARGET_POINTS);
+            
             // Downsample and send in chunks
-            const downsampled = downsampleGeometryStreaming(geometry, filename);
+            const downsampled = downsampleGeometryStreaming(geometry, filename, gridSize);
             sendGeometryInChunks(downsampled, filename, true);
         } else {
             // Send as-is in chunks
@@ -250,10 +283,13 @@ function parseASCIIPLY(headerText, data, headerLength, header, geometry) {
 }
 
 /**
- * Optimized grid-based downsampling using numeric spatial hash keys
- * Avoids string concatenation and uses TypedArray-based buckets
+ * Optimized grid-based downsampling using deterministic spatial hashing
+ * Ensures consistent point counts across all devices by:
+ * 1. Using strict floor-based grid calculation with local bounds
+ * 2. Deterministic point selection (first point in each cell)
+ * 3. Consistent floating-point arithmetic
  */
-function downsampleGeometryStreaming(geometry, filename) {
+function downsampleGeometryStreaming(geometry, filename, gridSize) {
     const positions = geometry.attributes.position;
     const colors = geometry.attributes.color;
     const normals = geometry.attributes.normal;
@@ -267,32 +303,42 @@ function downsampleGeometryStreaming(geometry, filename) {
 
     const totalPoints = positions.count;
     
-    // Use Map with simple string keys (optimized approach)
-    // Simpler and more reliable than bit-packing which can cause collisions
-    const cellIndices = new Map();
-    const hashCell = (cx, cy, cz) => `${cx}:${cy}:${cz}`;
+    // Use Set with BigInt keys for efficient cell tracking
+    // This avoids string allocation and array storage overhead
+    const seenCells = new Set();
+    const keptIndices = [];
     
-    // Pre-allocate point index storage arrays to reduce allocations
-    const indexBuckets = [];
-    let bucketCount = 0;
+    // Use local bounds for grid alignment
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const min = geometry.boundingBox.min;
+    
+    // Pre-calculate constants
+    const invGridSize = 1.0 / gridSize;
+    const minX = min.x;
+    const minY = min.y;
+    const minZ = min.z;
 
-    // First pass: collect all points in each cell
+    // First pass: collect unique points
     for (let i = 0; i < totalPoints; i++) {
         const x = positions.getX(i);
         const y = positions.getY(i);
         const z = positions.getZ(i);
 
-        const cellX = Math.floor(x / GRID_SIZE);
-        const cellY = Math.floor(y / GRID_SIZE);
-        const cellZ = Math.floor(z / GRID_SIZE);
-        const cellHash = hashCell(cellX, cellY, cellZ);
+        // Calculate grid indices relative to bounding box min
+        const cx = Math.floor((x - minX) * invGridSize);
+        const cy = Math.floor((y - minY) * invGridSize);
+        const cz = Math.floor((z - minZ) * invGridSize);
+        
+        // Create unique key using BigInt bit shifting
+        // 21 bits per dimension allows for >2 million cells per axis
+        const key = BigInt(cx) | (BigInt(cy) << 21n) | (BigInt(cz) << 42n);
 
-        if (!cellIndices.has(cellHash)) {
-            cellIndices.set(cellHash, []);
+        if (!seenCells.has(key)) {
+            seenCells.add(key);
+            keptIndices.push(i);
         }
-        cellIndices.get(cellHash).push(i);
 
-        // Report progress every 100k points (reduced messaging overhead)
+        // Report progress every 100k points
         if (i % 100000 === 0) {
             postMessage({
                 type: 'progress',
@@ -306,70 +352,61 @@ function downsampleGeometryStreaming(geometry, filename) {
     postMessage({
         type: 'progress',
         filename,
-        message: 'Processing grid cells...',
+        message: 'Constructing geometry...',
         progress: 50
     });
 
-    // Estimate result size for pre-allocation
-    const cellCount = cellIndices.size;
-    const resultPositions = new Float32Array(cellCount * 3);
-    const resultColors = new Float32Array(cellCount * 3);
-    const resultNormals = normals ? new Float32Array(cellCount * 3) : null;
+    const resultCount = keptIndices.length;
+    const resultPositions = new Float32Array(resultCount * 3);
+    const resultColors = new Float32Array(resultCount * 3);
+    const resultNormals = normals ? new Float32Array(resultCount * 3) : null;
     
-    let resultIdx = 0;
-    let processedCells = 0;
-
-    // Second pass: process each cell with direct TypedArray writes
-    for (const [cellHash, pointIndices] of cellIndices.entries()) {
-        const count = pointIndices.length;
+    // Second pass: copy data
+    for (let i = 0; i < resultCount; i++) {
+        const srcIdx = keptIndices[i];
         
-        // Random selection preserves structure better than averaging
-        // Pick a random point from the cell (fast and maintains original features)
-        const idx = USE_RANDOM_SELECTION && count > 1 
-            ? pointIndices[Math.floor(Math.random() * count)]
-            : pointIndices[0];
+        resultPositions[i * 3] = positions.getX(srcIdx);
+        resultPositions[i * 3 + 1] = positions.getY(srcIdx);
+        resultPositions[i * 3 + 2] = positions.getZ(srcIdx);
         
-        // Direct copy of selected point
-        resultPositions[resultIdx * 3] = positions.getX(idx);
-        resultPositions[resultIdx * 3 + 1] = positions.getY(idx);
-        resultPositions[resultIdx * 3 + 2] = positions.getZ(idx);
-        
-        resultColors[resultIdx * 3] = colors ? colors.getX(idx) : 1;
-        resultColors[resultIdx * 3 + 1] = colors ? colors.getY(idx) : 1;
-        resultColors[resultIdx * 3 + 2] = colors ? colors.getZ(idx) : 1;
-        
-        if (resultNormals) {
-            resultNormals[resultIdx * 3] = normals.getX(idx);
-            resultNormals[resultIdx * 3 + 1] = normals.getY(idx);
-            resultNormals[resultIdx * 3 + 2] = normals.getZ(idx);
+        if (colors) {
+            resultColors[i * 3] = colors.getX(srcIdx);
+            resultColors[i * 3 + 1] = colors.getY(srcIdx);
+            resultColors[i * 3 + 2] = colors.getZ(srcIdx);
+        } else {
+            resultColors[i * 3] = 1;
+            resultColors[i * 3 + 1] = 1;
+            resultColors[i * 3 + 2] = 1;
         }
         
-        resultIdx++;
-        processedCells++;
+        if (resultNormals) {
+            resultNormals[i * 3] = normals.getX(srcIdx);
+            resultNormals[i * 3 + 1] = normals.getY(srcIdx);
+            resultNormals[i * 3 + 2] = normals.getZ(srcIdx);
+        }
         
-        // Reduced progress reporting frequency
-        if (processedCells % 20000 === 0) {
+        if (i % 20000 === 0) {
             postMessage({
                 type: 'progress',
                 filename,
-                message: 'Processing grid cells...',
-                progress: 50 + (processedCells / cellCount) * 50 // 50-100%
+                message: 'Constructing geometry...',
+                progress: 50 + (i / resultCount) * 50 // 50-100%
             });
         }
     }
 
-    // Create new geometry with exact-sized arrays (slice if we over-allocated)
+    // Create new geometry
     const newGeometry = new THREE.BufferGeometry();
-    newGeometry.setAttribute('position', new THREE.BufferAttribute(resultPositions.slice(0, resultIdx * 3), 3));
-    newGeometry.setAttribute('color', new THREE.BufferAttribute(resultColors.slice(0, resultIdx * 3), 3));
+    newGeometry.setAttribute('position', new THREE.BufferAttribute(resultPositions, 3));
+    newGeometry.setAttribute('color', new THREE.BufferAttribute(resultColors, 3));
     if (resultNormals) {
-        newGeometry.setAttribute('normal', new THREE.BufferAttribute(resultNormals.slice(0, resultIdx * 3), 3));
+        newGeometry.setAttribute('normal', new THREE.BufferAttribute(resultNormals, 3));
     }
 
     postMessage({
         type: 'progress',
         filename,
-        message: `Downsampled from ${totalPoints.toLocaleString()} to ${resultIdx.toLocaleString()} points`,
+        message: `Downsampled from ${totalPoints.toLocaleString()} to ${resultCount.toLocaleString()} points`,
         progress: 100
     });
 

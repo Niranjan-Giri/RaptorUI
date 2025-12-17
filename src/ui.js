@@ -193,10 +193,11 @@ export function createUIManager(app, sceneManager, queryHandler) {
                 if (fileData.loadingMessage) { const messageSpan = document.createElement('span'); messageSpan.textContent = fileData.loadingMessage; messageSpan.style.fontSize='10px'; messageSpan.style.color='#aaa'; messageSpan.style.marginTop='2px'; label.appendChild(messageSpan);} }
             contentDiv.appendChild(label);
         });
+        /*We are not using export scene json button anymore*/
         // export button
-        let exportBtn = document.getElementById('export-scene-json-btn'); if (!exportBtn) { exportBtn = document.createElement('button'); exportBtn.id='export-scene-json-btn'; exportBtn.addEventListener('click', () => { exportSceneInfo(); }); }
+        /*let exportBtn = document.getElementById('export-scene-json-btn'); if (!exportBtn) { exportBtn = document.createElement('button'); exportBtn.id='export-scene-json-btn'; exportBtn.addEventListener('click', () => { exportSceneInfo(); }); }
         exportBtn.textContent = 'Export Scene JSON'; Object.assign(exportBtn.style, { marginTop: '10px', padding:'6px 10px', fontSize:'12px', borderRadius:'6px', border:'1px solid rgba(255,255,255,0.08)', background:'#333', cursor:'pointer' });
-        const existing = contentDiv.querySelector('#export-scene-json-btn'); if (existing) existing.remove(); contentDiv.appendChild(exportBtn);
+        const existing = contentDiv.querySelector('#export-scene-json-btn'); if (existing) existing.remove(); contentDiv.appendChild(exportBtn);*/
     }
 
     function exportSceneInfo() {
